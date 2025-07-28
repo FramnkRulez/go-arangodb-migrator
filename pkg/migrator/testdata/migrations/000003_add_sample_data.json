@@ -1,0 +1,37 @@
+{
+    "description": "Add sample book and author documents",
+    "up": [
+        {
+            "type": "addDocument",
+            "name": "authors",
+            "options": {
+                "document": {
+                    "_key": "author1",
+                    "name": "Jane Smith",
+                    "birthYear": 1980
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "books",
+            "options": {
+                "document": {
+                    "_key": "book1",
+                    "title": "The Great Adventure",
+                    "isbn": "978-1234567890"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "book_authors",
+            "options": {
+                "document": {
+                    "_from": "books/book1",
+                    "_to": "authors/author1"
+                }
+            }
+        }
+    ]
+} 

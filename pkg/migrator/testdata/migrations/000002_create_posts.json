@@ -1,0 +1,32 @@
+{
+    "description": "Create authors collection and book-authors graph",
+    "up": [
+        {
+            "type": "createCollection",
+            "name": "authors",
+            "options": {
+                "type": "document"
+            }
+        },
+        {
+            "type": "createCollection",
+            "name": "book_authors",
+            "options": {
+                "type": "edge"
+            }
+        },
+        {
+            "type": "createGraph",
+            "name": "library_graph",
+            "options": {
+                "edgeDefinitions": [
+                    {
+                        "collection": "book_authors",
+                        "from": ["books"],
+                        "to": ["authors"]
+                    }
+                ]
+            }
+        }
+    ]
+} 

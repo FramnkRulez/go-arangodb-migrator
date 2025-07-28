@@ -1,0 +1,22 @@
+{
+    "description": "Create books collection with indexes",
+    "up": [
+        {
+            "type": "createCollection",
+            "name": "books",
+            "options": {
+                "type": "document"
+            }
+        },
+        {
+            "type": "createPersistentIndex",
+            "name": "idx_books_isbn",
+            "options": {
+                "collection": "books",
+                "fields": ["isbn"],
+                "unique": true,
+                "sparse": true
+            }
+        }
+    ]
+} 
