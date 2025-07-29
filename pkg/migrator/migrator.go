@@ -532,9 +532,13 @@ func createGraph(ctx context.Context, db arangodb.Database, name string, options
 		return fmt.Errorf("failed to unmarshal edge definition options: %v", err)
 	}
 
-	orphanedCollections, ok := getSlice[string](options, "orphanCollections")
+	orphanedCollections, ok := getSlice[string](options, "orphanedCollections")
 	if !ok {
-		return fmt.Errorf("orphanedCollections option missing or not a string array")
+		// Try the old field name for backward compatibility
+		orphanedCollections, ok = getSlice[string](options, "orphanCollections")
+		if !ok {
+			return fmt.Errorf("orphanedCollections option missing or not a string array")
+		}
 	}
 
 	_, err = db.CreateGraph(ctx, name, &arangodb.GraphDefinition{
@@ -621,9 +625,14 @@ func addDocument(ctx context.Context, db arangodb.Database, name string, options
 		return fmt.Errorf("failed to get collection '%s' for document addition: %v", name, err)
 	}
 
-	for k, v := range options {
+	document, ok := options["document"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("document field missing or not an object")
+	}
+
+	for k, v := range document {
 		if v == "NOW()" {
-			options[k] = time.Now().UTC().Format(time.RFC3339)
+			document[k] = time.Now().UTC().Format(time.RFC3339)
 		}
 
 		if val, ok := v.(string); ok {
@@ -632,9 +641,9 @@ func addDocument(ctx context.Context, db arangodb.Database, name string, options
 				field = strings.TrimSuffix(field, ")")
 				field = strings.TrimSpace(field)
 
-				if field, ok := options[field]; ok {
+				if field, ok := document[field]; ok {
 					hash := sha256.Sum256([]byte(field.(string)))
-					options[k] = hex.EncodeToString(hash[:])
+					document[k] = hex.EncodeToString(hash[:])
 				} else {
 					return fmt.Errorf("no string field '%s' found in document for computing hash", field)
 				}
@@ -642,7 +651,7 @@ func addDocument(ctx context.Context, db arangodb.Database, name string, options
 		}
 	}
 
-	_, err = coll.CreateDocument(ctx, options)
+	_, err = coll.CreateDocument(ctx, document)
 	if err != nil {
 		return fmt.Errorf("failed to add document: %v", err)
 	}

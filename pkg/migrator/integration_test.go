@@ -65,11 +65,11 @@ func TestIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Check that all migrations were recorded
-		migrationNumbers := []string{"000001", "000002", "000003"}
-		for _, migrationNumber := range migrationNumbers {
-			exists, err := migrationsColl.DocumentExists(ctx, migrationNumber)
+		migrationKeys := []string{"000001_create_users", "000002_create_posts", "000003_add_sample_data"}
+		for _, migrationKey := range migrationKeys {
+			exists, err := migrationsColl.DocumentExists(ctx, migrationKey)
 			require.NoError(t, err)
-			assert.True(t, exists, "Migration %s should be recorded", migrationNumber)
+			assert.True(t, exists, "Migration %s should be recorded", migrationKey)
 		}
 	})
 
@@ -185,6 +185,7 @@ func TestOperationsIntegration(t *testing.T) {
 					"to":         []string{"vertices"},
 				},
 			},
+			"orphanedCollections": []string{},
 		})
 		require.NoError(t, err)
 
@@ -196,7 +197,7 @@ func TestOperationsIntegration(t *testing.T) {
 
 	t.Run("document operations", func(t *testing.T) {
 		// Create a collection first
-		err := createCollection(ctx, db, "test_collection", map[string]interface{}{
+		err := createCollection(ctx, db, "test_doc_collection", map[string]interface{}{
 			"type": "document",
 		})
 		require.NoError(t, err)
@@ -208,13 +209,13 @@ func TestOperationsIntegration(t *testing.T) {
 			"value": 42,
 		}
 
-		err = addDocument(ctx, db, "test_collection", map[string]interface{}{
+		err = addDocument(ctx, db, "test_doc_collection", map[string]interface{}{
 			"document": document,
 		})
 		require.NoError(t, err)
 
 		// Verify document exists
-		coll, err := db.GetCollection(ctx, "test_collection", nil)
+		coll, err := db.GetCollection(ctx, "test_doc_collection", nil)
 		require.NoError(t, err)
 
 		var retrievedDoc map[string]interface{}
@@ -225,11 +226,9 @@ func TestOperationsIntegration(t *testing.T) {
 		assert.Equal(t, float64(42), retrievedDoc["value"])
 
 		// Update the document
-		err = updateDocument(ctx, db, "test_collection", map[string]interface{}{
-			"key": "test_doc",
-			"document": map[string]interface{}{
-				"name": "Updated Name",
-			},
+		err = updateDocument(ctx, db, "test_doc_collection", map[string]interface{}{
+			"_key": "test_doc",
+			"name": "Updated Name",
 		})
 		require.NoError(t, err)
 
@@ -239,8 +238,8 @@ func TestOperationsIntegration(t *testing.T) {
 		assert.Equal(t, "Updated Name", retrievedDoc["name"])
 
 		// Delete the document
-		err = deleteDocument(ctx, db, "test_collection", map[string]interface{}{
-			"key": "test_doc",
+		err = deleteDocument(ctx, db, "test_doc_collection", map[string]interface{}{
+			"_key": "test_doc",
 		})
 		require.NoError(t, err)
 
