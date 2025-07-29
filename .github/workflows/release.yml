@@ -101,16 +101,24 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         # Get the latest tag
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
         echo "Latest tag: $LATEST_TAG"
         
-        # Get commits since last tag
-        COMMITS=$(git log --oneline --no-merges $LATEST_TAG..HEAD)
-        
-        if [ -z "$COMMITS" ]; then
-          CHANGELOG="## Changes since last release:\n- No new commits found"
+        # Get commits since last tag (or all commits if no previous tag)
+        if [ -z "$LATEST_TAG" ]; then
+          COMMITS=$(git log --oneline --no-merges)
+          CHANGELOG="## Initial Release\n\n### Commits:\n"
         else
-          CHANGELOG="## Changes since last release:\n\n### Commits:\n"
+          COMMITS=$(git log --oneline --no-merges $LATEST_TAG..HEAD)
+          if [ -z "$COMMITS" ]; then
+            CHANGELOG="## Changes since last release:\n- No new commits found"
+          else
+            CHANGELOG="## Changes since last release:\n\n### Commits:\n"
+          fi
+        fi
+        
+        # Add commits to changelog if there are any
+        if [ ! -z "$COMMITS" ]; then
           while IFS= read -r commit; do
             if [ ! -z "$commit" ]; then
               CHANGELOG="$CHANGELOG\n- $commit"
