@@ -58,7 +58,7 @@ func NewArangoDBContainer(ctx context.Context, t require.TestingT) *ArangoDBCont
 		Env: map[string]string{
 			"ARANGO_ROOT_PASSWORD": "testpassword",
 		},
-		WaitingFor: wait.ForHTTP("/_api/version").WithPort("8529/tcp").WithStartupTimeout(120 * time.Second),
+		WaitingFor: wait.ForLog("ready for business").WithStartupTimeout(180 * time.Second),
 	}
 
 	// Start the container
