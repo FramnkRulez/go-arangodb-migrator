@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 
@@ -100,4 +99,4 @@ func getEnv(key, defaultValue string) string {
 // export DATABASE=myapp
 // export MIGRATION_FOLDER=./migrations
 // export MIGRATION_COLLECTION=migrations
-// go run main.go 
+// go run main.go
