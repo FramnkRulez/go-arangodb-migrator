@@ -330,11 +330,11 @@ A command-line tool is also provided for easy migration management:
 **Option 1: Docker (Recommended)**
 ```bash
 # Run with Docker
-docker run --rm framnkrulez/go-arangodb-migrator:latest --help
+docker run --rm framnk/go-arangodb-migrator:latest --help
 
 # Or pull and run
-docker pull framnkrulez/go-arangodb-migrator:latest
-docker run --rm framnkrulez/go-arangodb-migrator:latest --database myapp --arango-password mypassword
+docker pull framnk/go-arangodb-migrator:latest
+docker run --rm framnk/go-arangodb-migrator:latest --database myapp --arango-password mypassword
 ```
 
 **Option 2: Download pre-built binaries**
@@ -350,7 +350,7 @@ go install github.com/FramnkRulez/go-arangodb-migrator/cmd/migrator@latest
 ```
 
 # Docker usage (recommended)
-docker run --rm framnkrulez/go-arangodb-migrator:latest \
+docker run --rm framnk/go-arangodb-migrator:latest \
   --database myapp --arango-password password
 
 # Basic usage (local binary)
@@ -362,22 +362,51 @@ docker run --rm framnkrulez/go-arangodb-migrator:latest \
            --arango-password password \
            --database myapp
 
+## Using Environment Variables
+
+All CLI options can also be set using environment variables, which is especially useful in containerized environments:
+
+```bash
+# Set environment variables
+export DATABASE=myapp
+export ARANGO_PASSWORD=mypassword
+export ARANGO_ADDRESS=http://localhost:8529
+export ARANGO_USER=root
+export MIGRATION_FOLDER=./db/migrations
+export MIGRATION_COLLECTION=db_migrations
+export DRY_RUN=true
+export VERBOSE=true
+
+# Run without command-line arguments
+./migrator
+
+# Or with Docker
+docker run --rm \
+  -e DATABASE=myapp \
+  -e ARANGO_PASSWORD=mypassword \
+  -e ARANGO_ADDRESS=http://localhost:8529 \
+  -e VERBOSE=true \
+  framnk/go-arangodb-migrator:latest
+```
+
+**Note**: Environment variables take precedence over default values but can be overridden by command-line arguments.
+
 # With custom migration settings
-docker run --rm -v $(pwd)/db/migrations:/app/migrations framnkrulez/go-arangodb-migrator:latest \
+docker run --rm -v $(pwd)/db/migrations:/app/migrations framnk/go-arangodb-migrator:latest \
   --database myapp --arango-password password \
   --migration-folder /app/migrations \
   --migration-collection db_migrations
 
 # Dry run to see what would be migrated
-docker run --rm framnkrulez/go-arangodb-migrator:latest \
+docker run --rm framnk/go-arangodb-migrator:latest \
   --database myapp --arango-password password --dry-run
 
 # Force migration even if files have been modified
-docker run --rm framnkrulez/go-arangodb-migrator:latest \
+docker run --rm framnk/go-arangodb-migrator:latest \
   --database myapp --arango-password password --force
 
 # Verbose output
-docker run --rm framnkrulez/go-arangodb-migrator:latest \
+docker run --rm framnk/go-arangodb-migrator:latest \
   --database myapp --arango-password password --verbose
 
 # Local binary examples

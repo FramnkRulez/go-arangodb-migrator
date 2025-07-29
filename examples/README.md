@@ -35,6 +35,32 @@ The example demonstrates:
 - Named graphs with multiple edge definitions
 - Complex relationships between entities
 
+## Environment Variables Example
+
+The `environment-variables/` directory contains an example that demonstrates how to use environment variables with the CLI tool. This is especially useful for:
+
+- Containerized environments (Docker, Kubernetes)
+- CI/CD pipelines
+- Production deployments
+- Avoiding sensitive data in command-line arguments
+
+### Running the Environment Variables Example
+
+1. Set up your environment variables:
+   ```bash
+   export DATABASE=example_db
+   export ARANGO_PASSWORD=your_password
+   export ARANGO_ADDRESS=http://localhost:8529
+   ```
+
+2. Run the example:
+   ```bash
+   cd examples/environment-variables
+   go run main.go
+   ```
+
+See `examples/environment-variables/README.md` for detailed documentation.
+
 ## Customizing Examples
 
 To use these examples with your own ArangoDB instance:
