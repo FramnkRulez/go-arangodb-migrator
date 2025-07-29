@@ -90,8 +90,8 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          framnkrulez/go-arangodb-migrator:latest
-          framnkrulez/go-arangodb-migrator:${{ steps.version.outputs.version }}
+          framnk/go-arangodb-migrator:latest
+          framnk/go-arangodb-migrator:${{ steps.version.outputs.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -184,7 +184,7 @@ jobs:
           
           **Option 1: Docker (Recommended)**
           ```bash
-          docker run --rm framnkrulez/go-arangodb-migrator:${{ steps.version.outputs.version }} --help
+          docker run --rm framnk/go-arangodb-migrator:${{ steps.version.outputs.version }} --help
           ```
           
           **Option 2: Download pre-built binaries**
