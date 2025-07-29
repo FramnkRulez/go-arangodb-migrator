@@ -273,6 +273,8 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 					err = updateDocument(ctx, db, operation.Name, operation.Options)
 				case "deleteDocument":
 					err = deleteDocument(ctx, db, operation.Name, operation.Options)
+				default:
+					err = fmt.Errorf("unsupported operation type: %s", operation.Type)
 				}
 
 				if err != nil {
