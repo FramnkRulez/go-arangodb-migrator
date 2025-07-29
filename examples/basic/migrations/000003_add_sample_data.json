@@ -1,0 +1,149 @@
+{
+    "description": "Add sample library data",
+    "up": [
+        {
+            "type": "addDocument",
+            "name": "authors",
+            "options": {
+                "document": {
+                    "_key": "author1",
+                    "name": "Jane Smith",
+                    "birthYear": 1980,
+                    "country": "USA"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "authors",
+            "options": {
+                "document": {
+                    "_key": "author2",
+                    "name": "John Doe",
+                    "birthYear": 1975,
+                    "country": "Canada"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "books",
+            "options": {
+                "document": {
+                    "_key": "book1",
+                    "title": "The Great Adventure",
+                    "isbn": "978-1234567890",
+                    "publishedYear": 2020,
+                    "pages": 350
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "books",
+            "options": {
+                "document": {
+                    "_key": "book2",
+                    "title": "Mystery of the Night",
+                    "isbn": "978-0987654321",
+                    "publishedYear": 2019,
+                    "pages": 280
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "categories",
+            "options": {
+                "document": {
+                    "_key": "fiction",
+                    "name": "Fiction",
+                    "description": "Fictional literature"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "categories",
+            "options": {
+                "document": {
+                    "_key": "mystery",
+                    "name": "Mystery",
+                    "description": "Mystery and thriller books"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "libraries",
+            "options": {
+                "document": {
+                    "_key": "main_library",
+                    "name": "Central Library",
+                    "address": "123 Main Street",
+                    "location": [40.7128, -74.0060]
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "book_authors",
+            "options": {
+                "document": {
+                    "_from": "books/book1",
+                    "_to": "authors/author1"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "book_authors",
+            "options": {
+                "document": {
+                    "_from": "books/book2",
+                    "_to": "authors/author2"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "book_categories",
+            "options": {
+                "document": {
+                    "_from": "books/book1",
+                    "_to": "categories/fiction"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "book_categories",
+            "options": {
+                "document": {
+                    "_from": "books/book2",
+                    "_to": "categories/mystery"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "library_books",
+            "options": {
+                "document": {
+                    "_from": "libraries/main_library",
+                    "_to": "books/book1"
+                }
+            }
+        },
+        {
+            "type": "addDocument",
+            "name": "library_books",
+            "options": {
+                "document": {
+                    "_from": "libraries/main_library",
+                    "_to": "books/book2"
+                }
+            }
+        }
+    ]
+} 

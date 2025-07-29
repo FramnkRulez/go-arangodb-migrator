@@ -1,0 +1,65 @@
+{
+    "description": "Create initial database schema for library management system",
+    "up": [
+        {
+            "type": "createCollection",
+            "name": "books",
+            "options": {
+                "type": "document"
+            }
+        },
+        {
+            "type": "createPersistentIndex",
+            "name": "idx_books_isbn",
+            "options": {
+                "collection": "books",
+                "fields": ["isbn"],
+                "unique": true,
+                "sparse": true
+            }
+        },
+        {
+            "type": "createPersistentIndex",
+            "name": "idx_books_title",
+            "options": {
+                "collection": "books",
+                "fields": ["title"]
+            }
+        },
+        {
+            "type": "createCollection",
+            "name": "authors",
+            "options": {
+                "type": "document"
+            }
+        },
+        {
+            "type": "createPersistentIndex",
+            "name": "idx_authors_name",
+            "options": {
+                "collection": "authors",
+                "fields": ["name"]
+            }
+        },
+        {
+            "type": "createCollection",
+            "name": "book_authors",
+            "options": {
+                "type": "edge"
+            }
+        },
+        {
+            "type": "createGraph",
+            "name": "library_graph",
+            "options": {
+                "edgeDefinitions": [
+                    {
+                        "collection": "book_authors",
+                        "from": ["books"],
+                        "to": ["authors"]
+                    }
+                ]
+            }
+        }
+    ]
+} 

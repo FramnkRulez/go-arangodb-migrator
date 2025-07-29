@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+TESTING.md
+LICENSE
+examples/
+
+# Build artifacts
+dist/
+bin/
+*.exe
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test files
+coverage.txt
+coverage.html
+
+# Temporary files
+*.tmp
+*.temp
+
+# Scripts (not needed in container)
+scripts/
+
+# GitHub workflows
+.github/ 

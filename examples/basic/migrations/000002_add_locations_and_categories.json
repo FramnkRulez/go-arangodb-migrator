@@ -1,0 +1,72 @@
+{
+    "description": "Add library locations, categories, and geo indexes",
+    "up": [
+        {
+            "type": "createCollection",
+            "name": "libraries",
+            "options": {
+                "type": "document"
+            }
+        },
+        {
+            "type": "createGeoIndex",
+            "name": "idx_libraries_location",
+            "options": {
+                "collection": "libraries",
+                "fields": ["location"]
+            }
+        },
+        {
+            "type": "createCollection",
+            "name": "categories",
+            "options": {
+                "type": "document"
+            }
+        },
+        {
+            "type": "createPersistentIndex",
+            "name": "idx_categories_name",
+            "options": {
+                "collection": "categories",
+                "fields": ["name"],
+                "unique": true
+            }
+        },
+        {
+            "type": "createCollection",
+            "name": "book_categories",
+            "options": {
+                "type": "edge"
+            }
+        },
+        {
+            "type": "createCollection",
+            "name": "library_books",
+            "options": {
+                "type": "edge"
+            }
+        },
+        {
+            "type": "addEdgeDefinition",
+            "name": "library_graph",
+            "options": {
+                "edgeDefinition": {
+                    "collection": "book_categories",
+                    "from": ["books"],
+                    "to": ["categories"]
+                }
+            }
+        },
+        {
+            "type": "addEdgeDefinition",
+            "name": "library_graph",
+            "options": {
+                "edgeDefinition": {
+                    "collection": "library_books",
+                    "from": ["libraries"],
+                    "to": ["books"]
+                }
+            }
+        }
+    ]
+} 
