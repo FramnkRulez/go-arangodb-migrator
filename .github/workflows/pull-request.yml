@@ -22,8 +22,14 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
-    - name: Run tests
-      run: go test -v -race ./...
+    - name: Run unit tests
+      run: go test -v -race ./pkg/migrator -run "TestMigrationOptions|TestOperation|TestMigration|TestAppliedMigration|TestGetFileSHA256|TestGetSlice"
+
+    - name: Run integration tests
+      env:
+        INTEGRATION_TEST: "true"
+      run: go test -v -race ./pkg/migrator -run "TestIntegration|TestOperationsIntegration"
+      timeout-minutes: 10
 
     - name: Build examples
       run: go build -v ./examples/...

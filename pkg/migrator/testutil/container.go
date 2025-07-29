@@ -58,7 +58,7 @@ func NewArangoDBContainer(ctx context.Context, t require.TestingT) *ArangoDBCont
 		Env: map[string]string{
 			"ARANGO_ROOT_PASSWORD": "testpassword",
 		},
-		WaitingFor: wait.ForHTTP("/_api/version").WithPort("8529/tcp"),
+		WaitingFor: wait.ForHTTP("/_api/version").WithPort("8529/tcp").WithStartupTimeout(120 * time.Second),
 	}
 
 	// Start the container
@@ -77,8 +77,9 @@ func NewArangoDBContainer(ctx context.Context, t require.TestingT) *ArangoDBCont
 
 	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
 
-	// Wait a bit for ArangoDB to be fully ready
-	time.Sleep(2 * time.Second)
+	// Wait for ArangoDB to be fully ready
+	// ArangoDB can take a moment to fully initialize after the HTTP endpoint is available
+	time.Sleep(5 * time.Second)
 
 	// Create ArangoDB client
 	conn := connection.NewHttpConnection(connection.HttpConfiguration{
@@ -91,8 +92,14 @@ func NewArangoDBContainer(ctx context.Context, t require.TestingT) *ArangoDBCont
 
 	client := arangodb.NewClient(conn)
 
-	// Verify connection
-	_, err = client.Version(ctx)
+	// Verify connection with retry
+	for i := 0; i < 3; i++ {
+		_, err = client.Version(ctx)
+		if err == nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
 	require.NoError(t, err)
 
 	return &ArangoDBContainer{
