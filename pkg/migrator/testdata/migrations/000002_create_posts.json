@@ -25,7 +25,8 @@
                         "from": ["books"],
                         "to": ["authors"]
                     }
-                ]
+                ],
+                "orphanedCollections": []
             }
         }
     ]
