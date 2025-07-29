@@ -168,11 +168,11 @@ func TestMigrateArangoDatabase(t *testing.T) {
 		require.NoError(t, err)
 
 		// Check that all migrations were recorded
-		migrationNumbers := []string{"000001", "000002", "000003"}
-		for _, migrationNumber := range migrationNumbers {
-			exists, err := migrationsColl.DocumentExists(ctx, migrationNumber)
+		migrationKeys := []string{"000001_create_users", "000002_create_posts", "000003_add_sample_data"}
+		for _, migrationKey := range migrationKeys {
+			exists, err := migrationsColl.DocumentExists(ctx, migrationKey)
 			require.NoError(t, err)
-			assert.True(t, exists, "Migration %s should be recorded", migrationNumber)
+			assert.True(t, exists, "Migration %s should be recorded", migrationKey)
 		}
 	})
 

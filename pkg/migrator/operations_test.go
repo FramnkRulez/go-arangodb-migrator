@@ -154,6 +154,7 @@ func TestCreateGraph(t *testing.T) {
 				"to":         []string{"vertices"},
 			},
 		},
+		"orphanedCollections": []string{},
 	})
 	require.NoError(t, err)
 
@@ -230,10 +231,8 @@ func TestUpdateDocument(t *testing.T) {
 
 	// Update the document
 	err = updateDocument(ctx, db, "test_collection", map[string]interface{}{
-		"key": "test_doc",
-		"document": map[string]interface{}{
-			"name": "Updated Name",
-		},
+		"_key": "test_doc",
+		"name": "Updated Name",
 	})
 	require.NoError(t, err)
 
@@ -275,7 +274,7 @@ func TestDeleteDocument(t *testing.T) {
 
 	// Delete the document
 	err = deleteDocument(ctx, db, "test_collection", map[string]interface{}{
-		"key": "test_doc",
+		"_key": "test_doc",
 	})
 	require.NoError(t, err)
 
