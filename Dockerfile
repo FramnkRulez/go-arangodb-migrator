@@ -1,5 +1,5 @@
 # Multi-stage build for ArangoDB Migrator CLI
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
