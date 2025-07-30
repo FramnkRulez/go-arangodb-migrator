@@ -42,7 +42,4 @@ RUN chown arangodb:arangodb arangodb-migrator
 USER arangodb
 
 # Set entrypoint
-ENTRYPOINT ["./arangodb-migrator"]
-
-# Default command (can be overridden)
-CMD ["--help"] 
+ENTRYPOINT ["./arangodb-migrator"] 
