@@ -10,9 +10,7 @@ import (
 	"github.com/arangodb/go-driver/v2/arangodb"
 	"github.com/arangodb/go-driver/v2/connection"
 	"github.com/jessevdk/go-flags"
-	"github.com/sirupsen/logrus"
-)
-
+	"github.com/sirupsen/logrus
 type Options struct {
 	// Connection options
 	ArangoAddress  string `long:"arango-address" description:"Address for ArangoDB (default: http://localhost:8529)" env:"ARANGO_ADDRESS" default:"http://localhost:8529"`
@@ -52,6 +50,26 @@ func parseArguments() Options {
 		}
 	}
 
+	// Echo parameters in verbose mode
+	if opts.Verbose {
+		logrus.Info("=== Configuration Parameters ===")
+		logrus.Infof("Database: %s", opts.Database)
+		logrus.Infof("ArangoDB Address: %s", opts.ArangoAddress)
+		logrus.Infof("ArangoDB User: %s", opts.ArangoUser)
+		if opts.ArangoPassword != "" {
+			logrus.Infof("ArangoDB Password: [MASKED] (length: %d)", len(opts.ArangoPassword))
+		} else {
+			logrus.Info("ArangoDB Password: [NOT SET]")
+		}
+		logrus.Infof("Migration Folder: %s", opts.MigrationFolder)
+		logrus.Infof("Migration Collection: %s", opts.MigrationCollection)
+		logrus.Infof("Dry Run: %t", opts.DryRun)
+		logrus.Infof("Force: %t", opts.Force)
+		logrus.Infof("Verbose: %t", opts.Verbose)
+		logrus.Infof("Quiet: %t", opts.Quiet)
+		logrus.Info("=== End Configuration ===")
+	}
+
 	return opts
 }
 
@@ -66,6 +84,11 @@ func setupLogging(opts Options) {
 }
 
 func main() {
+	// Enable verbose logging early if VERBOSE env var is set
+	if os.Getenv("VERBOSE") == "true" {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+
 	opts := parseArguments()
 
 	// Handle version flag
@@ -75,6 +98,26 @@ func main() {
 	}
 
 	setupLogging(opts)
+
+	// Debug environment variables if verbose
+	if opts.Verbose {
+		logrus.Info("=== Environment Variables ===")
+		logrus.Infof("DATABASE: %s", os.Getenv("DATABASE"))
+		logrus.Infof("ARANGO_ADDRESS: %s", os.Getenv("ARANGO_ADDRESS"))
+		logrus.Infof("ARANGO_USER: %s", os.Getenv("ARANGO_USER"))
+		if envPass := os.Getenv("ARANGO_PASSWORD"); envPass != "" {
+			logrus.Infof("ARANGO_PASSWORD: [MASKED] (length: %d)", len(envPass))
+		} else {
+			logrus.Info("ARANGO_PASSWORD: [NOT SET]")
+		}
+		logrus.Infof("MIGRATION_FOLDER: %s", os.Getenv("MIGRATION_FOLDER"))
+		logrus.Infof("MIGRATION_COLLECTION: %s", os.Getenv("MIGRATION_COLLECTION"))
+		logrus.Infof("DRY_RUN: %s", os.Getenv("DRY_RUN"))
+		logrus.Infof("FORCE: %s", os.Getenv("FORCE"))
+		logrus.Infof("VERBOSE: %s", os.Getenv("VERBOSE"))
+		logrus.Infof("QUIET: %s", os.Getenv("QUIET"))
+		logrus.Info("=== End Environment Variables ===")
+	}
 
 	// Validate required fields (unless showing version)
 	if !opts.Version {
