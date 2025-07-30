@@ -10,7 +10,9 @@ import (
 	"github.com/arangodb/go-driver/v2/arangodb"
 	"github.com/arangodb/go-driver/v2/connection"
 	"github.com/jessevdk/go-flags"
-	"github.com/sirupsen/logrus
+	"github.com/sirupsen/logrus"
+)
+
 type Options struct {
 	// Connection options
 	ArangoAddress  string `long:"arango-address" description:"Address for ArangoDB (default: http://localhost:8529)" env:"ARANGO_ADDRESS" default:"http://localhost:8529"`
