@@ -93,6 +93,11 @@ type MigrationOptions struct {
 	// Force allows migration to proceed even if migration files have been modified
 	// since they were last applied. This bypasses the SHA256 integrity check.
 	Force bool
+
+	// AutoRollback enables automatic rollback of all migrations in the current batch
+	// if any migration fails. This ensures database consistency by rolling back
+	// to the state before the migration batch started.
+	AutoRollback bool
 }
 
 // Operation represents a single migration operation.
@@ -119,6 +124,29 @@ type Migration struct {
 	Down []Operation `json:"down"`
 }
 
+// OperationResult tracks the result of a single operation for potential rollback.
+type OperationResult struct {
+	// Type is the operation type (e.g., "createCollection", "addDocument").
+	Type string `json:"type"`
+
+	// Name is the name of the resource being operated on.
+	Name string `json:"name"`
+
+	// Options contains the original operation options.
+	Options map[string]interface{} `json:"options"`
+
+	// Result contains operation-specific result data for rollback.
+	// For documents: contains the created document ID
+	// For collections: contains collection properties
+	// For indexes: contains index details
+	Result map[string]interface{} `json:"result,omitempty"`
+
+	// RollbackData contains additional data needed for rollback.
+	// For documents: contains the original document content
+	// For updates: contains the original document state
+	RollbackData map[string]interface{} `json:"rollbackData,omitempty"`
+}
+
 // AppliedMigration tracks a migration that has been successfully applied.
 type AppliedMigration struct {
 	// MigrationNumber is the migration file name without extension (e.g., "000001").
@@ -129,11 +157,16 @@ type AppliedMigration struct {
 
 	// Sha256 is the hash of the migration file for integrity verification.
 	Sha256 string `json:"sha256"`
+
+	// OperationResults tracks the results of each operation for potential rollback.
+	OperationResults []OperationResult `json:"operationResults,omitempty"`
 }
 
 // MigrateArangoDatabase applies all pending migrations to the specified database.
 // Migrations are applied in order based on their numeric filename prefix.
-// If any migration fails, all previously applied operations in that migration are rolled back.
+// If any migration fails, the behavior depends on the AutoRollback option:
+//   - With AutoRollback=true: All migrations in the current batch are rolled back
+//   - With AutoRollback=false: Only operations from the failed migration are rolled back
 //
 // The function performs the following steps:
 //  1. Creates the migration collection if it doesn't exist
@@ -141,7 +174,8 @@ type AppliedMigration struct {
 //  3. Sorts migrations by numeric filename prefix
 //  4. Applies migrations that haven't been applied yet
 //  5. Verifies file integrity using SHA256 hashes (unless Force is true)
-//  6. Rolls back on failure
+//  6. Tracks operation results for potential rollback
+//  7. Rolls back on failure based on AutoRollback setting
 //
 // # Parameters
 //
@@ -151,8 +185,8 @@ type AppliedMigration struct {
 //
 // # Returns
 //
-// Returns an error if any migration fails. On failure, all operations
-// from the failed migration are rolled back.
+// Returns an error if any migration fails. On failure, operations are rolled back
+// according to the AutoRollback setting.
 //
 // # Examples
 //
@@ -163,6 +197,14 @@ type AppliedMigration struct {
 //		MigrationCollection: "migrations",
 //	})
 //
+// With auto-rollback enabled:
+//
+//	err := migrator.MigrateArangoDatabase(ctx, db, migrator.MigrationOptions{
+//		MigrationFolder:     "./migrations",
+//		MigrationCollection: "migrations",
+//		AutoRollback:        true, // Rollback entire batch on failure
+//	})
+//
 // With force option:
 //
 //	err := migrator.MigrateArangoDatabase(ctx, db, migrator.MigrationOptions{
@@ -170,10 +212,18 @@ type AppliedMigration struct {
 //		MigrationCollection: "migrations",
 //		Force:               true, // Bypass file modification checks
 //	})
-func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options MigrationOptions) error {
-	var err error
+//
+// PendingMigration represents a migration that needs to be applied.
+type PendingMigration struct {
+	MigrationNumber string
+	Migration       *Migration
+	Hash            string
+	FilePath        string
+}
+
+func collectPendingMigrations(ctx context.Context, db arangodb.Database, options MigrationOptions) ([]PendingMigration, arangodb.Collection, error) {
 	var migrationColl arangodb.Collection
-	migrationColl, err = db.GetCollection(ctx, options.MigrationCollection, &arangodb.GetCollectionOptions{
+	migrationColl, err := db.GetCollection(ctx, options.MigrationCollection, &arangodb.GetCollectionOptions{
 		SkipExistCheck: false,
 	})
 	if err != nil {
@@ -182,35 +232,36 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 				Type: arangodb.CollectionTypeDocument,
 			})
 			if err != nil {
-				return fmt.Errorf("failed to create migration collection in specified db: %v", err)
+				return nil, nil, fmt.Errorf("failed to create migration collection in specified db: %v", err)
 			}
 		} else {
-			return err
+			return nil, nil, err
 		}
 	}
 
 	// Get all migrations from the migration folder
 	migrations, err := os.ReadDir(options.MigrationFolder)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
+
+	var pendingMigrations []PendingMigration
 
 	for _, migration := range migrations {
 		if strings.HasSuffix(migration.Name(), ".json") {
 			migrationNumber := strings.TrimSuffix(migration.Name(), ".json")
-
 			fullpath := filepath.Join(options.MigrationFolder, migration.Name())
 
 			hash, err := getFileSHA256(fullpath)
 			if err != nil {
-				return fmt.Errorf("failed to compute hash for migration file: %v", err)
+				return nil, nil, fmt.Errorf("failed to compute hash for migration file: %v", err)
 			}
 
 			var appliedMigration *AppliedMigration
 			_, err = migrationColl.ReadDocument(ctx, migrationNumber, &appliedMigration)
 			if err != nil {
 				if !shared.IsNotFound(err) {
-					return fmt.Errorf("failed to read applied migration: %v", err)
+					return nil, nil, fmt.Errorf("failed to read applied migration: %v", err)
 				}
 			}
 
@@ -219,14 +270,14 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 					if options.Force {
 						logrus.Warnf("migration file %s has been modified since last applied, but continuing due to force flag", migrationNumber)
 					} else {
-						return fmt.Errorf("migration file has been modified since last applied: %s (use --force to override)", migrationNumber)
+						return nil, nil, fmt.Errorf("migration file has been modified since last applied: %s (use --force to override)", migrationNumber)
 					}
 				}
 			}
 
 			exists, err := migrationColl.DocumentExists(ctx, migrationNumber)
 			if err != nil {
-				return fmt.Errorf("failed to check if migration exists: %v", err)
+				return nil, nil, fmt.Errorf("failed to check if migration exists: %v", err)
 			}
 
 			if exists {
@@ -237,59 +288,121 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 			// Read the migration file
 			migrationFile, err := os.ReadFile(filepath.Join(options.MigrationFolder, migration.Name()))
 			if err != nil {
-				return err
+				return nil, nil, err
 			}
 
 			// Parse the migration file
-			migration := &Migration{}
-			err = json.Unmarshal(migrationFile, migration)
+			migrationData := &Migration{}
+			err = json.Unmarshal(migrationFile, migrationData)
 			if err != nil {
-				return err
+				return nil, nil, err
 			}
 
 			// Validate migration structure
-			if len(migration.Up) == 0 {
-				return fmt.Errorf("migration file %s does not include a valid 'up' list of migrations to apply", migrationNumber)
+			if len(migrationData.Up) == 0 {
+				return nil, nil, fmt.Errorf("migration file %s does not include a valid 'up' list of migrations to apply", migrationNumber)
 			}
 
-			if len(migration.Down) > 0 {
-				return fmt.Errorf("migration file %s has a 'down' list of migrations, but down migrations are not yet supported", migrationNumber)
+			if len(migrationData.Down) > 0 {
+				return nil, nil, fmt.Errorf("migration file %s has a 'down' list of migrations, but down migrations are not yet supported", migrationNumber)
 			}
 
-			appliedOperations := []Operation{}
+			pendingMigrations = append(pendingMigrations, PendingMigration{
+				MigrationNumber: migrationNumber,
+				Migration:       migrationData,
+				Hash:            hash,
+				FilePath:        fullpath,
+			})
 
-			for _, operation := range migration.Up {
-				switch operation.Type {
-				case "createCollection":
-					err = createCollection(ctx, db, operation.Name, operation.Options)
-				case "createPersistentIndex":
-					err = createPersistentIndex(ctx, db, operation.Name, operation.Options)
-				case "createGeoIndex":
-					err = createGeoIndex(ctx, db, operation.Name, operation.Options)
-				case "createGraph":
-					err = createGraph(ctx, db, operation.Name, operation.Options)
-				case "addEdgeDefinition":
-					err = addEdgeDefinition(ctx, db, operation.Name, operation.Options)
-				case "deleteIndex":
-					err = deleteIndex(ctx, db, operation.Name, operation.Options)
-				case "deleteEdgeDefinition":
-					err = deleteEdgeDefinition(ctx, db, operation.Name, operation.Options)
-				case "deleteCollection":
-					err = deleteCollection(ctx, db, operation.Name)
-				case "addDocument":
-					err = addDocument(ctx, db, operation.Name, operation.Options)
-				case "updateDocument":
-					err = updateDocument(ctx, db, operation.Name, operation.Options)
-				case "deleteDocument":
-					err = deleteDocument(ctx, db, operation.Name, operation.Options)
-				default:
-					err = fmt.Errorf("unsupported operation type: %s", operation.Type)
-				}
+		} else {
+			logrus.Warnf("unrecognized file suffix for migration file: %s, skipping...", migration.Name())
+		}
+	}
 
-				if err != nil {
-					logrus.Errorf("migration operation failed for migration %s on %s: %v", migrationNumber, operation.Type, err)
-					logrus.Error("rolling back applied operations...")
-					rollbackErr := rollback(ctx, db, appliedOperations)
+	return pendingMigrations, migrationColl, nil
+}
+
+func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options MigrationOptions) error {
+	// Collect all pending migrations
+	pendingMigrations, migrationColl, err := collectPendingMigrations(ctx, db, options)
+	if err != nil {
+		return err
+	}
+
+	if len(pendingMigrations) == 0 {
+		logrus.Info("no pending migrations to apply")
+		return nil
+	}
+
+	// If auto-rollback is enabled, we need to track all applied migrations
+	// so we can rollback the entire batch if any migration fails
+	var appliedMigrations []AppliedMigration
+	var appliedOperations []OperationResult
+
+	// Apply each migration
+	for _, pendingMigration := range pendingMigrations {
+		migrationNumber := pendingMigration.MigrationNumber
+		migration := pendingMigration.Migration
+
+		logrus.Infof("applying migration %s...", migrationNumber)
+
+		// Track operations for this migration
+		var migrationOperations []OperationResult
+
+		// Apply each operation in the migration
+		for _, operation := range migration.Up {
+			var operationResult OperationResult
+			var err error
+
+			switch operation.Type {
+			case "createCollection":
+				operationResult, err = createCollectionWithTracking(ctx, db, operation.Name, operation.Options)
+			case "createPersistentIndex":
+				operationResult, err = createPersistentIndexWithTracking(ctx, db, operation.Name, operation.Options)
+			case "createGeoIndex":
+				operationResult, err = createGeoIndexWithTracking(ctx, db, operation.Name, operation.Options)
+			case "createGraph":
+				operationResult, err = createGraphWithTracking(ctx, db, operation.Name, operation.Options)
+			case "addEdgeDefinition":
+				operationResult, err = addEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
+			case "deleteIndex":
+				operationResult, err = deleteIndexWithTracking(ctx, db, operation.Name, operation.Options)
+			case "deleteEdgeDefinition":
+				operationResult, err = deleteEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
+			case "deleteCollection":
+				operationResult, err = deleteCollectionWithTracking(ctx, db, operation.Name)
+			case "addDocument":
+				operationResult, err = addDocumentWithTracking(ctx, db, operation.Name, operation.Options)
+			case "updateDocument":
+				operationResult, err = updateDocumentWithTracking(ctx, db, operation.Name, operation.Options)
+			case "deleteDocument":
+				operationResult, err = deleteDocumentWithTracking(ctx, db, operation.Name, operation.Options)
+			default:
+				err = fmt.Errorf("unsupported operation type: %s", operation.Type)
+			}
+
+			if err != nil {
+				logrus.Errorf("migration operation failed for migration %s on %s: %v", migrationNumber, operation.Type, err)
+
+				if options.AutoRollback {
+					logrus.Error("auto-rollback enabled, rolling back all applied migrations...")
+					rollbackErr := autoRollback(ctx, db, appliedOperations)
+					if rollbackErr != nil {
+						logrus.Errorf("failed to auto-rollback migrations: %v", rollbackErr)
+						logrus.Error("database may be in an inconsistent state")
+						return fmt.Errorf("failed to auto-rollback migrations: %v", rollbackErr)
+					}
+					return fmt.Errorf("migration operation failed for migration %s: %v", migrationNumber, err)
+				} else {
+					// Legacy rollback behavior - only rollback operations from current migration
+					logrus.Error("rolling back applied operations from current migration...")
+					// Convert Operation to OperationResult for legacy rollback
+					legacyOperation := OperationResult{
+						Type:    operation.Type,
+						Name:    operation.Name,
+						Options: operation.Options,
+					}
+					rollbackErr := autoRollback(ctx, db, []OperationResult{legacyOperation})
 					if rollbackErr != nil {
 						logrus.Errorf("failed to rollback migration: %v", rollbackErr)
 						logrus.Error("database may be in an unclean state")
@@ -297,27 +410,96 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 					}
 					return fmt.Errorf("migration operation failed for migration %s: %v", migrationNumber, err)
 				}
-
-				appliedOperations = append(appliedOperations, operation)
 			}
 
-			// Mark migration as applied
-			_, err = migrationColl.CreateDocument(ctx, &AppliedMigration{
-				MigrationNumber: migrationNumber,
-				AppliedAt:       time.Now(),
-				Sha256:          hash,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to mark migration as applied: %v", err)
-			}
+			// Track the operation result
+			operationResult.Type = operation.Type
+			operationResult.Name = operation.Name
+			operationResult.Options = operation.Options
+			migrationOperations = append(migrationOperations, operationResult)
+			appliedOperations = append(appliedOperations, operationResult)
+		}
 
-			logrus.Infof("migration %s applied successfully.", migrationNumber)
+		// Store migration for later application (only if entire batch succeeds)
+		appliedMigrations = append(appliedMigrations, AppliedMigration{
+			MigrationNumber:  migrationNumber,
+			AppliedAt:        time.Now(),
+			Sha256:           pendingMigration.Hash,
+			OperationResults: migrationOperations,
+		})
+		logrus.Infof("migration %s applied successfully.", migrationNumber)
+	}
 
-		} else {
-			logrus.Warnf("unrecognized file suffix for migration file: %s, skipping...", migration.Name())
+	// Mark all migrations as applied only after the entire batch succeeds
+	for _, appliedMigration := range appliedMigrations {
+		_, err := migrationColl.CreateDocument(ctx, &appliedMigration)
+		if err != nil {
+			return fmt.Errorf("failed to mark migration as applied: %v", err)
 		}
 	}
 
+	logrus.Infof("all %d migrations applied successfully", len(pendingMigrations))
+	return nil
+}
+
+// autoRollback rolls back all operations in reverse order using the tracked operation results
+func autoRollback(ctx context.Context, db arangodb.Database, appliedOperations []OperationResult) error {
+	logrus.Info("starting auto-rollback of all applied operations...")
+
+	// Rollback in reverse order (LIFO)
+	for i := len(appliedOperations) - 1; i >= 0; i-- {
+		operation := appliedOperations[i]
+		var err error
+
+		switch operation.Type {
+		case "createCollection":
+			err = deleteCollection(ctx, db, operation.Name)
+		case "createPersistentIndex":
+			err = deleteIndex(ctx, db, operation.Name, operation.Options)
+		case "createGeoIndex":
+			err = deleteIndex(ctx, db, operation.Name, operation.Options)
+		case "createGraph":
+			err = deleteGraph(ctx, db, operation.Name)
+		case "addEdgeDefinition":
+			err = deleteEdgeDefinition(ctx, db, operation.Name, operation.Options)
+		case "addDocument":
+			// Use the tracked document ID for deletion
+			if docID, ok := operation.Result["documentID"].(string); ok {
+				err = deleteDocumentByID(ctx, db, operation.Name, docID)
+			} else {
+				err = deleteDocument(ctx, db, operation.Name, operation.Options)
+			}
+		case "updateDocument":
+			// Restore the original document state
+			if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
+				err = restoreDocument(ctx, db, operation.Name, originalDoc)
+			} else {
+				err = fmt.Errorf("cannot rollback document update - no original state available")
+			}
+		case "deleteCollection":
+			err = fmt.Errorf("cannot rollback collection deletion")
+		case "deleteIndex":
+			err = fmt.Errorf("cannot rollback index deletion")
+		case "deleteEdgeDefinition":
+			err = fmt.Errorf("cannot rollback edge definition deletion")
+		case "deleteDocument":
+			// Restore the deleted document
+			if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
+				err = restoreDocument(ctx, db, operation.Name, originalDoc)
+			} else {
+				err = fmt.Errorf("cannot rollback document deletion - no original state available")
+			}
+		}
+
+		if err != nil {
+			logrus.Errorf("failed to rollback operation %s: %v", operation.Type, err)
+			return fmt.Errorf("failed to rollback operation %s: %v", operation.Type, err)
+		}
+
+		logrus.Infof("rolled back operation: %s (%s)", operation.Type, operation.Name)
+	}
+
+	logrus.Info("auto-rollback completed successfully")
 	return nil
 }
 
@@ -351,6 +533,324 @@ func rollback(ctx context.Context, db arangodb.Database, appliedOperations []Ope
 			return err
 		}
 	}
+	return nil
+}
+
+// Tracking versions of operations that return OperationResult for rollback
+func createCollectionWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "createCollection",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := createCollection(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	// Store collection properties for potential rollback
+	result.Result["collectionName"] = name
+	result.Result["collectionType"] = options["type"]
+	return result, nil
+}
+
+func createPersistentIndexWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "createPersistentIndex",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := createPersistentIndex(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["indexName"] = name
+	result.Result["collection"] = options["collection"]
+	return result, nil
+}
+
+func createGeoIndexWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "createGeoIndex",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := createGeoIndex(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["indexName"] = name
+	result.Result["collection"] = options["collection"]
+	return result, nil
+}
+
+func createGraphWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "createGraph",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := createGraph(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["graphName"] = name
+	return result, nil
+}
+
+func addEdgeDefinitionWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "addEdgeDefinition",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := addEdgeDefinition(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["graphName"] = name
+	result.Result["collection"] = options["collection"]
+	return result, nil
+}
+
+func deleteIndexWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "deleteIndex",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := deleteIndex(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["indexName"] = name
+	result.Result["collection"] = options["collection"]
+	return result, nil
+}
+
+func deleteEdgeDefinitionWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "deleteEdgeDefinition",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	err := deleteEdgeDefinition(ctx, db, name, options)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["graphName"] = name
+	result.Result["collection"] = options["collection"]
+	return result, nil
+}
+
+func deleteCollectionWithTracking(ctx context.Context, db arangodb.Database, name string) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "deleteCollection",
+		Name:    name,
+		Options: make(map[string]interface{}),
+		Result:  make(map[string]interface{}),
+	}
+
+	err := deleteCollection(ctx, db, name)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["collectionName"] = name
+	return result, nil
+}
+
+func addDocumentWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "addDocument",
+		Name:    name,
+		Options: options,
+		Result:  make(map[string]interface{}),
+	}
+
+	// Store original document for potential rollback
+	if document, ok := options["document"].(map[string]interface{}); ok {
+		result.RollbackData = make(map[string]interface{})
+		result.RollbackData["originalDocument"] = document
+	}
+
+	// Get the collection
+	coll, err := db.GetCollection(ctx, name, &arangodb.GetCollectionOptions{})
+	if err != nil {
+		return result, fmt.Errorf("failed to get collection '%s' for document addition: %v", name, err)
+	}
+
+	document, ok := options["document"].(map[string]interface{})
+	if !ok {
+		return result, fmt.Errorf("document field missing or not an object")
+	}
+
+	// Process special values
+	for k, v := range document {
+		if v == "NOW()" {
+			document[k] = time.Now().UTC().Format(time.RFC3339)
+		}
+
+		if val, ok := v.(string); ok {
+			if strings.HasPrefix(val, "SHA256(") && strings.HasSuffix(val, ")") {
+				field := strings.TrimPrefix(val, "SHA256(")
+				field = strings.TrimSuffix(field, ")")
+				field = strings.TrimSpace(field)
+
+				if field, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(field.(string)))
+					document[k] = hex.EncodeToString(hash[:])
+				} else {
+					return result, fmt.Errorf("no string field '%s' found in document for computing hash", field)
+				}
+			}
+		}
+	}
+
+	// Create the document and capture the result
+	meta, err := coll.CreateDocument(ctx, document)
+	if err != nil {
+		return result, fmt.Errorf("failed to add document: %v", err)
+	}
+
+	// Store the document ID for rollback
+	result.Result["documentID"] = meta.Key
+	return result, nil
+}
+
+func updateDocumentWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:         "updateDocument",
+		Name:         name,
+		Options:      options,
+		Result:       make(map[string]interface{}),
+		RollbackData: make(map[string]interface{}),
+	}
+
+	// Get the collection
+	coll, err := db.GetCollection(ctx, name, &arangodb.GetCollectionOptions{})
+	if err != nil {
+		return result, fmt.Errorf("failed to get collection '%s' for document update: %v", name, err)
+	}
+
+	key, ok := options["_key"].(string)
+	if !ok {
+		return result, fmt.Errorf("document key missing or not a string")
+	}
+
+	// Read the original document for rollback
+	var originalDoc map[string]interface{}
+	_, err = coll.ReadDocument(ctx, key, &originalDoc)
+	if err != nil {
+		return result, fmt.Errorf("failed to read original document for rollback: %v", err)
+	}
+
+	// Store original document for rollback
+	result.RollbackData["originalDocument"] = originalDoc
+	result.Result["documentKey"] = key
+
+	// Process special values
+	for k, v := range options {
+		if v == "NOW()" {
+			options[k] = time.Now().UTC().Format(time.RFC3339)
+		}
+	}
+
+	// Update the document
+	_, err = coll.UpdateDocument(ctx, key, options)
+	if err != nil {
+		return result, fmt.Errorf("failed to update document: %v", err)
+	}
+
+	return result, nil
+}
+
+func deleteDocumentWithTracking(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) (OperationResult, error) {
+	result := OperationResult{
+		Type:         "deleteDocument",
+		Name:         name,
+		Options:      options,
+		Result:       make(map[string]interface{}),
+		RollbackData: make(map[string]interface{}),
+	}
+
+	// Get the collection
+	coll, err := db.GetCollection(ctx, name, &arangodb.GetCollectionOptions{})
+	if err != nil {
+		return result, fmt.Errorf("failed to get collection '%s' for document deletion: %v", name, err)
+	}
+
+	key, ok := options["_key"].(string)
+	if !ok {
+		return result, fmt.Errorf("document key missing or not a string")
+	}
+
+	// Read the original document for rollback
+	var originalDoc map[string]interface{}
+	_, err = coll.ReadDocument(ctx, key, &originalDoc)
+	if err != nil {
+		return result, fmt.Errorf("failed to read original document for rollback: %v", err)
+	}
+
+	// Store original document for rollback
+	result.RollbackData["originalDocument"] = originalDoc
+	result.Result["documentKey"] = key
+
+	// Delete the document
+	_, err = coll.DeleteDocument(ctx, key)
+	if err != nil {
+		return result, fmt.Errorf("failed to remove document: %v", err)
+	}
+
+	return result, nil
+}
+
+// Helper functions for auto-rollback
+func deleteDocumentByID(ctx context.Context, db arangodb.Database, collectionName, documentID string) error {
+	coll, err := db.GetCollection(ctx, collectionName, &arangodb.GetCollectionOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get collection '%s' for document deletion: %v", collectionName, err)
+	}
+
+	_, err = coll.DeleteDocument(ctx, documentID)
+	if err != nil {
+		return fmt.Errorf("failed to remove document: %v", err)
+	}
+
+	return nil
+}
+
+func restoreDocument(ctx context.Context, db arangodb.Database, collectionName string, document map[string]interface{}) error {
+	coll, err := db.GetCollection(ctx, collectionName, &arangodb.GetCollectionOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get collection '%s' for document restoration: %v", collectionName, err)
+	}
+
+	_, err = coll.CreateDocument(ctx, document)
+	if err != nil {
+		return fmt.Errorf("failed to restore document: %v", err)
+	}
+
 	return nil
 }
 

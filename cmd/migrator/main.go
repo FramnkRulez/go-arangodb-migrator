@@ -27,8 +27,9 @@ type Options struct {
 	MigrationCollection string `long:"migration-collection" description:"Collection name for tracking migrations (default: migrations)" env:"MIGRATION_COLLECTION" default:"migrations"`
 
 	// Behavior options
-	DryRun bool `long:"dry-run" description:"Show what would be migrated without actually running migrations" env:"DRY_RUN"`
-	Force  bool `long:"force" description:"Force migration even if files have been modified" env:"FORCE"`
+	DryRun       bool `long:"dry-run" description:"Show what would be migrated without actually running migrations" env:"DRY_RUN"`
+	Force        bool `long:"force" description:"Force migration even if files have been modified" env:"FORCE"`
+	AutoRollback bool `long:"auto-rollback" description:"Enable automatic rollback of all migrations in batch if any migration fails" env:"AUTO_ROLLBACK"`
 
 	// Output options
 	Verbose bool `long:"verbose" short:"v" description:"Enable verbose logging" env:"VERBOSE"`
@@ -67,6 +68,7 @@ func parseArguments() Options {
 		logrus.Infof("Migration Collection: %s", opts.MigrationCollection)
 		logrus.Infof("Dry Run: %t", opts.DryRun)
 		logrus.Infof("Force: %t", opts.Force)
+		logrus.Infof("Auto Rollback: %t", opts.AutoRollback)
 		logrus.Infof("Verbose: %t", opts.Verbose)
 		logrus.Infof("Quiet: %t", opts.Quiet)
 		logrus.Info("=== End Configuration ===")
@@ -116,6 +118,7 @@ func main() {
 		logrus.Infof("MIGRATION_COLLECTION: %s", os.Getenv("MIGRATION_COLLECTION"))
 		logrus.Infof("DRY_RUN: %s", os.Getenv("DRY_RUN"))
 		logrus.Infof("FORCE: %s", os.Getenv("FORCE"))
+		logrus.Infof("AUTO_ROLLBACK: %s", os.Getenv("AUTO_ROLLBACK"))
 		logrus.Infof("VERBOSE: %s", os.Getenv("VERBOSE"))
 		logrus.Infof("QUIET: %s", os.Getenv("QUIET"))
 		logrus.Info("=== End Environment Variables ===")
@@ -228,6 +231,7 @@ func MigrateDatabase(ctx context.Context, client arangodb.Client, opts Options) 
 		logrus.Infof("  - Migration folder: %s", migrationFolder)
 		logrus.Infof("  - Migration collection: %s", opts.MigrationCollection)
 		logrus.Infof("  - Force mode: %t", opts.Force)
+		logrus.Infof("  - Auto rollback: %t", opts.AutoRollback)
 		return nil, nil
 	}
 
@@ -235,6 +239,7 @@ func MigrateDatabase(ctx context.Context, client arangodb.Client, opts Options) 
 		MigrationCollection: opts.MigrationCollection,
 		MigrationFolder:     migrationFolder,
 		Force:               opts.Force,
+		AutoRollback:        opts.AutoRollback,
 	}
 
 	err = migrator.MigrateArangoDatabase(ctx, db, migrationOpts)
