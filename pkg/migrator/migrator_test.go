@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/FramnkRulez/go-arangodb-migrator/pkg/migrator/testutil"
+	"github.com/arangodb/go-driver/v2/arangodb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -488,4 +490,282 @@ func TestMigrateArangoDatabaseWithMissingUpList(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not include a valid 'up' list of migrations to apply")
+}
+
+func TestMigrateArangoDatabaseWithAutoRollback(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_auto_rollback")
+
+	// Create temporary directory with multiple migrations
+	tempDir := t.TempDir()
+
+	// Create first migration (should succeed)
+	firstMigration := `{
+		"description": "First migration - should succeed",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "test_collection",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "test_collection",
+				"options": {
+					"document": {
+						"_key": "doc1",
+						"name": "Test Document 1",
+						"value": 100
+					}
+				}
+			}
+		]
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, "000001_first.json"), []byte(firstMigration), 0644)
+	require.NoError(t, err)
+
+	// Create second migration (should fail)
+	secondMigration := `{
+		"description": "Second migration - should fail",
+		"up": [
+			{
+				"type": "addDocument",
+				"name": "test_collection",
+				"options": {
+					"document": {
+						"_key": "doc2",
+						"name": "Test Document 2",
+						"value": 200
+					}
+				}
+			},
+			{
+				"type": "invalidOperation",
+				"name": "test",
+				"options": {}
+			}
+		]
+	}`
+
+	err = os.WriteFile(filepath.Join(tempDir, "000002_second.json"), []byte(secondMigration), 0644)
+	require.NoError(t, err)
+
+	// Run migrations with auto-rollback enabled - should fail and rollback everything
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
+
+	// Verify that the collection was rolled back (should not exist)
+	exists, err := db.CollectionExists(ctx, "test_collection")
+	require.NoError(t, err)
+	assert.False(t, exists, "Collection should have been rolled back")
+
+	// Verify that no migrations were recorded
+	// Check that no migrations were recorded
+	query := "FOR doc IN migrations RETURN doc"
+	cursor, err := db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var count int
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		count++
+	}
+
+	assert.Equal(t, 0, count, "No migrations should have been recorded after rollback")
+}
+
+func TestMigrateArangoDatabaseWithAutoRollbackDocumentOperations(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_auto_rollback_docs")
+
+	// Create temporary directory with document operations
+	tempDir := t.TempDir()
+
+	// Create migration with document operations that should be rolled back
+	migration := `{
+		"description": "Migration with document operations",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "users",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "users",
+				"options": {
+					"document": {
+						"_key": "user1",
+						"name": "John Doe",
+						"email": "john@example.com"
+					}
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "users",
+				"options": {
+					"document": {
+						"_key": "user2",
+						"name": "Jane Smith",
+						"email": "jane@example.com"
+					}
+				}
+			},
+			{
+				"type": "invalidOperation",
+				"name": "test",
+				"options": {}
+			}
+		]
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, "000001_docs.json"), []byte(migration), 0644)
+	require.NoError(t, err)
+
+	// Run migrations with auto-rollback enabled - should fail and rollback everything
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
+
+	// Verify that the collection was rolled back (should not exist)
+	exists, err := db.CollectionExists(ctx, "users")
+	require.NoError(t, err)
+	assert.False(t, exists, "Collection should have been rolled back")
+
+	// Verify that no migrations were recorded
+	query := "FOR doc IN migrations RETURN doc"
+	cursor, err := db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var count int
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		count++
+	}
+
+	assert.Equal(t, 0, count, "No migrations should have been recorded after rollback")
+}
+
+func TestBackwardCompatibilityWithExistingMigrations(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_backward_compatibility")
+
+	// Create migration collection and manually insert an "old" migration record
+	// that doesn't have the OperationResults field (simulating pre-auto-rollback)
+	migrationsColl, err := db.CreateCollection(ctx, "migrations", &arangodb.CreateCollectionProperties{
+		Type: arangodb.CollectionTypeDocument,
+	})
+	require.NoError(t, err)
+
+	// Insert an "old" migration record (without OperationResults field)
+	oldMigration := map[string]interface{}{
+		"_key":      "000001_old_migration",
+		"appliedAt": time.Now().UTC().Format(time.RFC3339),
+		"sha256":    "old_hash_123",
+		// Note: no "operationResults" field - simulating pre-auto-rollback
+	}
+
+	_, err = migrationsColl.CreateDocument(ctx, oldMigration)
+	require.NoError(t, err)
+
+	// Create a new migration file
+	tempDir := t.TempDir()
+	newMigration := `{
+		"description": "New migration with auto-rollback",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "new_collection",
+				"options": {
+					"type": "document"
+				}
+			}
+		]
+	}`
+
+	err = os.WriteFile(filepath.Join(tempDir, "000002_new_migration.json"), []byte(newMigration), 0644)
+	require.NoError(t, err)
+
+	// Run migrations - should work fine with the old migration record
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	require.NoError(t, err)
+
+	// Verify that the new collection was created
+	exists, err := db.CollectionExists(ctx, "new_collection")
+	require.NoError(t, err)
+	assert.True(t, exists, "New collection should exist")
+
+	// Verify that both migrations are recorded
+	query := "FOR doc IN migrations SORT doc._key RETURN doc"
+	cursor, err := db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var migrations []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		migrations = append(migrations, doc)
+	}
+
+	assert.Len(t, migrations, 2, "Should have 2 migrations recorded")
+
+	// Verify the old migration doesn't have operationResults
+	oldMigrationDoc := migrations[0]
+	assert.Equal(t, "000001_old_migration", oldMigrationDoc["_key"])
+	_, hasOperationResults := oldMigrationDoc["operationResults"]
+	assert.False(t, hasOperationResults, "Old migration should not have operationResults field")
+
+	// Verify the new migration has operationResults
+	newMigrationDoc := migrations[1]
+	assert.Equal(t, "000002_new_migration", newMigrationDoc["_key"])
+	_, hasOperationResults = newMigrationDoc["operationResults"]
+	assert.True(t, hasOperationResults, "New migration should have operationResults field")
 }
