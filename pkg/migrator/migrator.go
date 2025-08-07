@@ -247,6 +247,15 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 				return err
 			}
 
+			// Validate migration structure
+			if len(migration.Up) == 0 {
+				return fmt.Errorf("migration file %s does not include a valid 'up' list of migrations to apply", migrationNumber)
+			}
+
+			if len(migration.Down) > 0 {
+				return fmt.Errorf("migration file %s has a 'down' list of migrations, but down migrations are not yet supported", migrationNumber)
+			}
+
 			appliedOperations := []Operation{}
 
 			for _, operation := range migration.Up {
@@ -280,11 +289,11 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 				if err != nil {
 					logrus.Errorf("migration operation failed for migration %s on %s: %v", migrationNumber, operation.Type, err)
 					logrus.Error("rolling back applied operations...")
-					err := rollback(ctx, db, appliedOperations)
-					if err != nil {
-						logrus.Errorf("failed to rollback migration: %v", err)
+					rollbackErr := rollback(ctx, db, appliedOperations)
+					if rollbackErr != nil {
+						logrus.Errorf("failed to rollback migration: %v", rollbackErr)
 						logrus.Error("database may be in an unclean state")
-						return fmt.Errorf("failed to rollback migration: %v", err)
+						return fmt.Errorf("failed to rollback migration: %v", rollbackErr)
 					}
 					return fmt.Errorf("migration operation failed for migration %s: %v", migrationNumber, err)
 				}

@@ -228,7 +228,7 @@ func TestMigrateArangoDatabaseWithInvalidMigration(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalidOperation")
+	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
 }
 
 func TestMigrateArangoDatabaseWithModifiedFile(t *testing.T) {
@@ -385,4 +385,107 @@ func TestMigrateArangoDatabaseWithNonJsonFiles(t *testing.T) {
 	exists, err := db.CollectionExists(ctx, "test_collection")
 	require.NoError(t, err)
 	assert.True(t, exists, "Collection should be created")
+}
+
+func TestMigrateArangoDatabaseWithEmptyUpList(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_empty_up_list")
+
+	// Create temporary directory with migration that has empty up list
+	tempDir := t.TempDir()
+	emptyUpMigration := `{
+		"description": "Migration with empty up list",
+		"up": []
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, "000001_empty_up.json"), []byte(emptyUpMigration), 0644)
+	require.NoError(t, err)
+
+	// Run migrations - should fail due to empty up list
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not include a valid 'up' list of migrations to apply")
+}
+
+func TestMigrateArangoDatabaseWithDownList(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_down_list")
+
+	// Create temporary directory with migration that has down list
+	tempDir := t.TempDir()
+	downMigration := `{
+		"description": "Migration with down list",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "test_collection",
+				"options": {
+					"type": "document"
+				}
+			}
+		],
+		"down": [
+			{
+				"type": "deleteCollection",
+				"name": "test_collection"
+			}
+		]
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, "000001_with_down.json"), []byte(downMigration), 0644)
+	require.NoError(t, err)
+
+	// Run migrations - should fail due to down list
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has a 'down' list of migrations, but down migrations are not yet supported")
+}
+
+func TestMigrateArangoDatabaseWithMissingUpList(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_missing_up_list")
+
+	// Create temporary directory with migration that has no up list
+	tempDir := t.TempDir()
+	missingUpMigration := `{
+		"description": "Migration with missing up list"
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, "000001_missing_up.json"), []byte(missingUpMigration), 0644)
+	require.NoError(t, err)
+
+	// Run migrations - should fail due to missing up list
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not include a valid 'up' list of migrations to apply")
 }
