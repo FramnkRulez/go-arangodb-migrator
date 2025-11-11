@@ -769,3 +769,474 @@ func TestBackwardCompatibilityWithExistingMigrations(t *testing.T) {
 	_, hasOperationResults = newMigrationDoc["operationResults"]
 	assert.True(t, hasOperationResults, "New migration should have operationResults field")
 }
+
+func TestAutoRollbackSequenceOfMigrations(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_auto_rollback_sequence")
+
+	// Create migration files for a sequence of migrations
+	tempDir := t.TempDir()
+
+	// Migration 1: Create users collection and add a user
+	migration1 := `{
+		"description": "Create users collection and add initial user",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "users",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "users",
+				"options": {
+					"document": {
+						"_key": "user1",
+						"name": "John Doe",
+						"email": "john@example.com"
+					}
+				}
+			}
+		]
+	}`
+
+	// Migration 2: Create posts collection and add a post
+	migration2 := `{
+		"description": "Create posts collection and add initial post",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "posts",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "posts",
+				"options": {
+					"document": {
+						"_key": "post1",
+						"title": "Hello World",
+						"content": "This is my first post",
+						"author": "user1"
+					}
+				}
+			}
+		]
+	}`
+
+	// Migration 3: Create comments collection and add a comment
+	migration3 := `{
+		"description": "Create comments collection and add initial comment",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "comments",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "comments",
+				"options": {
+					"document": {
+						"_key": "comment1",
+						"content": "Great post!",
+						"post": "post1",
+						"author": "user1"
+					}
+				}
+			}
+		]
+	}`
+
+	// Migration 4: This will fail with an invalid operation
+	migration4 := `{
+		"description": "This migration will fail",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "categories",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "invalidOperation",
+				"name": "test",
+				"options": {}
+			}
+		]
+	}`
+
+	// Write migration files
+	err := os.WriteFile(filepath.Join(tempDir, "000001_create_users.json"), []byte(migration1), 0644)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(tempDir, "000002_create_posts.json"), []byte(migration2), 0644)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(tempDir, "000003_create_comments.json"), []byte(migration3), 0644)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(tempDir, "000004_fail_migration.json"), []byte(migration4), 0644)
+	require.NoError(t, err)
+
+	// Run migrations with auto-rollback enabled - this should fail on migration 4
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	// Should fail due to invalid operation in migration 4
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
+
+	// Verify that NO collections exist (all should be rolled back)
+	exists, err := db.CollectionExists(ctx, "users")
+	require.NoError(t, err)
+	assert.False(t, exists, "Users collection should not exist after rollback")
+
+	exists, err = db.CollectionExists(ctx, "posts")
+	require.NoError(t, err)
+	assert.False(t, exists, "Posts collection should not exist after rollback")
+
+	exists, err = db.CollectionExists(ctx, "comments")
+	require.NoError(t, err)
+	assert.False(t, exists, "Comments collection should not exist after rollback")
+
+	exists, err = db.CollectionExists(ctx, "categories")
+	require.NoError(t, err)
+	assert.False(t, exists, "Categories collection should not exist after rollback")
+
+	// Verify that NO migrations are recorded
+	query := "FOR doc IN migrations RETURN doc"
+	cursor, err := db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var migrations []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		migrations = append(migrations, doc)
+	}
+
+	assert.Len(t, migrations, 0, "No migrations should be recorded after rollback")
+
+	// Now test that we can re-run the migrations successfully
+	// Remove the failing migration file
+	err = os.Remove(filepath.Join(tempDir, "000004_fail_migration.json"))
+	require.NoError(t, err)
+
+	// Run migrations again - should succeed
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	require.NoError(t, err, "Migrations should succeed when failing migration is removed")
+
+	// Verify that all collections exist
+	exists, err = db.CollectionExists(ctx, "users")
+	require.NoError(t, err)
+	assert.True(t, exists, "Users collection should exist after successful migration")
+
+	exists, err = db.CollectionExists(ctx, "posts")
+	require.NoError(t, err)
+	assert.True(t, exists, "Posts collection should exist after successful migration")
+
+	exists, err = db.CollectionExists(ctx, "comments")
+	require.NoError(t, err)
+	assert.True(t, exists, "Comments collection should exist after successful migration")
+
+	// Verify that all migrations are recorded
+	query = "FOR doc IN migrations SORT doc._key RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	migrations = nil
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		migrations = append(migrations, doc)
+	}
+
+	assert.Len(t, migrations, 3, "All 3 migrations should be recorded after successful run")
+	assert.Equal(t, "000001_create_users", migrations[0]["_key"])
+	assert.Equal(t, "000002_create_posts", migrations[1]["_key"])
+	assert.Equal(t, "000003_create_comments", migrations[2]["_key"])
+
+	// Verify that documents exist in collections
+
+	// Check users collection has 1 document
+	query = "FOR doc IN users RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var users []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		users = append(users, doc)
+	}
+	assert.Len(t, users, 1, "Users collection should have 1 document")
+	assert.Equal(t, "user1", users[0]["_key"])
+
+	// Check posts collection has 1 document
+	query = "FOR doc IN posts RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var posts []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		posts = append(posts, doc)
+	}
+	assert.Len(t, posts, 1, "Posts collection should have 1 document")
+	assert.Equal(t, "post1", posts[0]["_key"])
+
+	// Check comments collection has 1 document
+	query = "FOR doc IN comments RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var comments []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		comments = append(comments, doc)
+	}
+	assert.Len(t, comments, 1, "Comments collection should have 1 document")
+	assert.Equal(t, "comment1", comments[0]["_key"])
+}
+
+func TestAutoRollbackLeavesDatabaseClean(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_auto_rollback_clean")
+
+	// Create migration files for a sequence of migrations
+	tempDir := t.TempDir()
+
+	// Migration 1: Create users collection and add a user
+	migration1 := `{
+		"description": "Create users collection and add initial user",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "users",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "users",
+				"options": {
+					"document": {
+						"_key": "user1",
+						"name": "John Doe",
+						"email": "john@example.com"
+					}
+				}
+			}
+		]
+	}`
+
+	// Migration 2: Create posts collection and add a post
+	migration2 := `{
+		"description": "Create posts collection and add initial post",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "posts",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "addDocument",
+				"name": "posts",
+				"options": {
+					"document": {
+						"_key": "post1",
+						"title": "Hello World",
+						"content": "This is my first post",
+						"author": "user1"
+					}
+				}
+			}
+		]
+	}`
+
+	// Migration 3: This will fail with an invalid operation
+	migration3 := `{
+		"description": "This migration will fail",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "categories",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "invalidOperation",
+				"name": "test",
+				"options": {}
+			}
+		]
+	}`
+
+	// Write migration files
+	err := os.WriteFile(filepath.Join(tempDir, "000001_create_users.json"), []byte(migration1), 0644)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(tempDir, "000002_create_posts.json"), []byte(migration2), 0644)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(tempDir, "000003_fail_migration.json"), []byte(migration3), 0644)
+	require.NoError(t, err)
+
+	// Run migrations with auto-rollback enabled - this should fail on migration 3
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	// Should fail due to invalid operation in migration 3
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
+
+	// Verify that NO collections exist (all should be rolled back)
+	exists, err := db.CollectionExists(ctx, "users")
+	require.NoError(t, err)
+	assert.False(t, exists, "Users collection should not exist after rollback")
+
+	exists, err = db.CollectionExists(ctx, "posts")
+	require.NoError(t, err)
+	assert.False(t, exists, "Posts collection should not exist after rollback")
+
+	exists, err = db.CollectionExists(ctx, "categories")
+	require.NoError(t, err)
+	assert.False(t, exists, "Categories collection should not exist after rollback")
+
+	// Verify that NO migrations are recorded
+	query := "FOR doc IN migrations RETURN doc"
+	cursor, err := db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var migrations []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		migrations = append(migrations, doc)
+	}
+
+	assert.Len(t, migrations, 0, "No migrations should be recorded after rollback")
+
+	// Now test that we can re-run the migrations successfully
+	// Remove the failing migration file
+	err = os.Remove(filepath.Join(tempDir, "000003_fail_migration.json"))
+	require.NoError(t, err)
+
+	// Run migrations again - should succeed
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	require.NoError(t, err, "Migrations should succeed when failing migration is removed")
+
+	// Verify that all collections exist
+	exists, err = db.CollectionExists(ctx, "users")
+	require.NoError(t, err)
+	assert.True(t, exists, "Users collection should exist after successful migration")
+
+	exists, err = db.CollectionExists(ctx, "posts")
+	require.NoError(t, err)
+	assert.True(t, exists, "Posts collection should exist after successful migration")
+
+	// Verify that all migrations are recorded
+	query = "FOR doc IN migrations SORT doc._key RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	migrations = nil
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		migrations = append(migrations, doc)
+	}
+
+	assert.Len(t, migrations, 2, "All 2 migrations should be recorded after successful run")
+	assert.Equal(t, "000001_create_users", migrations[0]["_key"])
+	assert.Equal(t, "000002_create_posts", migrations[1]["_key"])
+
+	// Verify that documents exist in collections
+	// Check users collection has 1 document
+	query = "FOR doc IN users RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var users []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		users = append(users, doc)
+	}
+	assert.Len(t, users, 1, "Users collection should have 1 document")
+	assert.Equal(t, "user1", users[0]["_key"])
+
+	// Check posts collection has 1 document
+	query = "FOR doc IN posts RETURN doc"
+	cursor, err = db.Query(ctx, query, nil)
+	require.NoError(t, err)
+	defer cursor.Close()
+
+	var posts []map[string]interface{}
+	for cursor.HasMore() {
+		var doc map[string]interface{}
+		_, err := cursor.ReadDocument(ctx, &doc)
+		require.NoError(t, err)
+		posts = append(posts, doc)
+	}
+	assert.Len(t, posts, 1, "Posts collection should have 1 document")
+	assert.Equal(t, "post1", posts[0]["_key"])
+}

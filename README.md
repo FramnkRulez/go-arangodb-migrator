@@ -300,8 +300,8 @@ Updates an existing document.
     "type": "updateDocument",
     "name": "users",
     "options": {
-        "key": "admin",
         "document": {
+            "_key": "admin",
             "role": "super_admin"
         }
     }
@@ -316,7 +316,7 @@ Deletes a document from a collection.
     "type": "deleteDocument",
     "name": "users",
     "options": {
-        "key": "admin"
+        "_key": "admin"
     }
 }
 ```

@@ -231,8 +231,10 @@ func TestUpdateDocument(t *testing.T) {
 
 	// Update the document
 	err = updateDocument(ctx, db, "test_collection", map[string]interface{}{
-		"_key": "test_doc",
-		"name": "Updated Name",
+		"document": map[string]interface{}{
+			"_key": "test_doc",
+			"name": "Updated Name",
+		},
 	})
 	require.NoError(t, err)
 
