@@ -316,7 +316,7 @@ Deletes a document from a collection.
     "type": "deleteDocument",
     "name": "users",
     "options": {
-        "key": "admin"
+        "_key": "admin"
     }
 }
 ```
