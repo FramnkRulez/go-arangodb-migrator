@@ -717,8 +717,8 @@ func addDocumentWithTracking(ctx context.Context, db arangodb.Database, name str
 				field = strings.TrimSuffix(field, ")")
 				field = strings.TrimSpace(field)
 
-				if field, ok := document[field]; ok {
-					hash := sha256.Sum256([]byte(field.(string)))
+				if fieldValue, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(fieldValue.(string)))
 					document[k] = hex.EncodeToString(hash[:])
 				} else {
 					return result, fmt.Errorf("no string field '%s' found in document for computing hash", field)
@@ -788,8 +788,8 @@ func updateDocumentWithTracking(ctx context.Context, db arangodb.Database, name 
 				field = strings.TrimSuffix(field, ")")
 				field = strings.TrimSpace(field)
 
-				if field, ok := document[field]; ok {
-					hash := sha256.Sum256([]byte(field.(string)))
+				if fieldValue, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(fieldValue.(string)))
 					document[k] = hex.EncodeToString(hash[:])
 				} else {
 					return result, fmt.Errorf("no string field '%s' found in document for computing hash", field)
@@ -1183,8 +1183,8 @@ func addDocument(ctx context.Context, db arangodb.Database, name string, options
 				field = strings.TrimSuffix(field, ")")
 				field = strings.TrimSpace(field)
 
-				if field, ok := document[field]; ok {
-					hash := sha256.Sum256([]byte(field.(string)))
+				if fieldValue, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(fieldValue.(string)))
 					document[k] = hex.EncodeToString(hash[:])
 				} else {
 					return fmt.Errorf("no string field '%s' found in document for computing hash", field)
@@ -1231,8 +1231,8 @@ func updateDocument(ctx context.Context, db arangodb.Database, name string, opti
 				field = strings.TrimSuffix(field, ")")
 				field = strings.TrimSpace(field)
 
-				if field, ok := document[field]; ok {
-					hash := sha256.Sum256([]byte(field.(string)))
+				if fieldValue, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(fieldValue.(string)))
 					document[k] = hex.EncodeToString(hash[:])
 				} else {
 					return fmt.Errorf("no string field '%s' found in document for computing hash", field)
