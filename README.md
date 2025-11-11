@@ -300,8 +300,8 @@ Updates an existing document.
     "type": "updateDocument",
     "name": "users",
     "options": {
-        "key": "admin",
         "document": {
+            "_key": "admin",
             "role": "super_admin"
         }
     }

@@ -753,7 +753,14 @@ func updateDocumentWithTracking(ctx context.Context, db arangodb.Database, name 
 		return result, fmt.Errorf("failed to get collection '%s' for document update: %v", name, err)
 	}
 
-	key, ok := options["_key"].(string)
+	// Extract document from options (consistent with addDocument)
+	document, ok := options["document"].(map[string]interface{})
+	if !ok {
+		return result, fmt.Errorf("document field missing or not an object")
+	}
+
+	// Extract _key from document (consistent with addDocument)
+	key, ok := document["_key"].(string)
 	if !ok {
 		return result, fmt.Errorf("document key missing or not a string")
 	}
@@ -770,14 +777,38 @@ func updateDocumentWithTracking(ctx context.Context, db arangodb.Database, name 
 	result.Result["documentKey"] = key
 
 	// Process special values
-	for k, v := range options {
+	for k, v := range document {
 		if v == "NOW()" {
-			options[k] = time.Now().UTC().Format(time.RFC3339)
+			document[k] = time.Now().UTC().Format(time.RFC3339)
+		}
+
+		if val, ok := v.(string); ok {
+			if strings.HasPrefix(val, "SHA256(") && strings.HasSuffix(val, ")") {
+				field := strings.TrimPrefix(val, "SHA256(")
+				field = strings.TrimSuffix(field, ")")
+				field = strings.TrimSpace(field)
+
+				if field, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(field.(string)))
+					document[k] = hex.EncodeToString(hash[:])
+				} else {
+					return result, fmt.Errorf("no string field '%s' found in document for computing hash", field)
+				}
+			}
+		}
+	}
+
+	// Create a copy of the document without _key for the update
+	// (ArangoDB doesn't allow updating _key)
+	updateData := make(map[string]interface{})
+	for k, v := range document {
+		if k != "_key" {
+			updateData[k] = v
 		}
 	}
 
 	// Update the document
-	_, err = coll.UpdateDocument(ctx, key, options)
+	_, err = coll.UpdateDocument(ctx, key, updateData)
 	if err != nil {
 		return result, fmt.Errorf("failed to update document: %v", err)
 	}
@@ -1173,21 +1204,53 @@ func addDocument(ctx context.Context, db arangodb.Database, name string, options
 func updateDocument(ctx context.Context, db arangodb.Database, name string, options map[string]interface{}) error {
 	coll, err := db.GetCollection(ctx, name, &arangodb.GetCollectionOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get collection '%s' for document addition: %v", name, err)
+		return fmt.Errorf("failed to get collection '%s' for document update: %v", name, err)
 	}
 
-	key, ok := options["_key"].(string)
+	// Extract document from options (consistent with addDocument)
+	document, ok := options["document"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("document field missing or not an object")
+	}
+
+	// Extract _key from document (consistent with addDocument)
+	key, ok := document["_key"].(string)
 	if !ok {
 		return fmt.Errorf("document key missing or not a string")
 	}
 
-	for k, v := range options {
+	// Process special values
+	for k, v := range document {
 		if v == "NOW()" {
-			options[k] = time.Now().UTC().Format(time.RFC3339)
+			document[k] = time.Now().UTC().Format(time.RFC3339)
+		}
+
+		if val, ok := v.(string); ok {
+			if strings.HasPrefix(val, "SHA256(") && strings.HasSuffix(val, ")") {
+				field := strings.TrimPrefix(val, "SHA256(")
+				field = strings.TrimSuffix(field, ")")
+				field = strings.TrimSpace(field)
+
+				if field, ok := document[field]; ok {
+					hash := sha256.Sum256([]byte(field.(string)))
+					document[k] = hex.EncodeToString(hash[:])
+				} else {
+					return fmt.Errorf("no string field '%s' found in document for computing hash", field)
+				}
+			}
 		}
 	}
 
-	_, err = coll.UpdateDocument(ctx, key, options)
+	// Create a copy of the document without _key for the update
+	// (ArangoDB doesn't allow updating _key)
+	updateData := make(map[string]interface{})
+	for k, v := range document {
+		if k != "_key" {
+			updateData[k] = v
+		}
+	}
+
+	_, err = coll.UpdateDocument(ctx, key, updateData)
 	if err != nil {
 		return fmt.Errorf("failed to update document: %v", err)
 	}
