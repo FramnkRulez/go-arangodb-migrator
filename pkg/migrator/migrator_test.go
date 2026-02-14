@@ -233,6 +233,78 @@ func TestMigrateArangoDatabaseWithInvalidMigration(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
 }
 
+func TestMigrateArangoDatabaseWithDeleteGraphOperation(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ArangoDB container
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	// Create test database
+	db := container.CreateTestDatabase(ctx, t, "test_delete_graph_migration")
+
+	// Create a temporary migration that creates and then deletes a graph
+	tempDir := t.TempDir()
+	migration := `{
+		"description": "Create and delete graph",
+		"up": [
+			{
+				"type": "createCollection",
+				"name": "vertices",
+				"options": {
+					"type": "document"
+				}
+			},
+			{
+				"type": "createCollection",
+				"name": "edges",
+				"options": {
+					"type": "edge"
+				}
+			},
+			{
+				"type": "createGraph",
+				"name": "test_graph",
+				"options": {
+					"edgeDefinitions": [
+						{
+							"collection": "edges",
+							"from": ["vertices"],
+							"to": ["vertices"]
+						}
+					],
+					"orphanedCollections": []
+				}
+			},
+			{
+				"type": "deleteGraph",
+				"name": "test_graph"
+			}
+		]
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, "000001_delete_graph.json"), []byte(migration), 0644)
+	require.NoError(t, err)
+
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+	})
+	require.NoError(t, err)
+
+	graphExists, err := db.GraphExists(ctx, "test_graph")
+	require.NoError(t, err)
+	assert.False(t, graphExists, "Graph should be deleted by migration")
+
+	verticesExists, err := db.CollectionExists(ctx, "vertices")
+	require.NoError(t, err)
+	assert.True(t, verticesExists, "Vertex collection should remain after graph deletion")
+
+	edgesExists, err := db.CollectionExists(ctx, "edges")
+	require.NoError(t, err)
+	assert.True(t, edgesExists, "Edge collection should remain after graph deletion")
+}
+
 func TestMigrateArangoDatabaseWithModifiedFile(t *testing.T) {
 	ctx := context.Background()
 
