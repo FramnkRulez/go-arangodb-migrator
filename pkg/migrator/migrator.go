@@ -369,6 +369,8 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 				operationResult, err = deleteIndexWithTracking(ctx, db, operation.Name, operation.Options)
 			case "deleteEdgeDefinition":
 				operationResult, err = deleteEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
+			case "deleteGraph":
+				operationResult, err = deleteGraphWithTracking(ctx, db, operation.Name)
 			case "deleteCollection":
 				operationResult, err = deleteCollectionWithTracking(ctx, db, operation.Name)
 			case "addDocument":
@@ -482,6 +484,8 @@ func autoRollback(ctx context.Context, db arangodb.Database, appliedOperations [
 			err = fmt.Errorf("cannot rollback index deletion")
 		case "deleteEdgeDefinition":
 			err = fmt.Errorf("cannot rollback edge definition deletion")
+		case "deleteGraph":
+			err = fmt.Errorf("cannot rollback graph deletion")
 		case "deleteDocument":
 			// Restore the deleted document
 			if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
@@ -527,6 +531,8 @@ func rollback(ctx context.Context, db arangodb.Database, appliedOperations []Ope
 			return fmt.Errorf("cannot rollback persistent index deletion")
 		case "deleteEdgeDefinition":
 			return fmt.Errorf("cannot rollback edge definition deletion")
+		case "deleteGraph":
+			return fmt.Errorf("cannot rollback graph deletion")
 		}
 
 		if err != nil {
@@ -660,6 +666,23 @@ func deleteEdgeDefinitionWithTracking(ctx context.Context, db arangodb.Database,
 
 	result.Result["graphName"] = name
 	result.Result["collection"] = options["collection"]
+	return result, nil
+}
+
+func deleteGraphWithTracking(ctx context.Context, db arangodb.Database, name string) (OperationResult, error) {
+	result := OperationResult{
+		Type:    "deleteGraph",
+		Name:    name,
+		Options: make(map[string]interface{}),
+		Result:  make(map[string]interface{}),
+	}
+
+	err := deleteGraph(ctx, db, name)
+	if err != nil {
+		return result, err
+	}
+
+	result.Result["graphName"] = name
 	return result, nil
 }
 
