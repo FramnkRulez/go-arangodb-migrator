@@ -525,14 +525,134 @@ func TestMigrateArangoDatabaseWithDownList(t *testing.T) {
 	err := os.WriteFile(filepath.Join(tempDir, "000001_with_down.json"), []byte(downMigration), 0644)
 	require.NoError(t, err)
 
-	// Run migrations - should fail due to down list
+	// Run migrations - should succeed with a down list present
 	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
 		MigrationFolder:     tempDir,
 		MigrationCollection: "migrations",
 	})
 
+	require.NoError(t, err)
+
+	exists, err := db.CollectionExists(ctx, "test_collection")
+	require.NoError(t, err)
+	assert.True(t, exists, "Collection should be created")
+}
+
+func TestMigrateArangoDatabaseAutoRollbackUsesExplicitDown(t *testing.T) {
+	ctx := context.Background()
+
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	db := container.CreateTestDatabase(ctx, t, "test_explicit_down_rollback")
+
+	_, err := db.CreateCollection(ctx, "to_restore", &arangodb.CreateCollectionProperties{
+		Type: arangodb.CollectionTypeDocument,
+	})
+	require.NoError(t, err)
+
+	tempDir := t.TempDir()
+	firstMigration := `{
+		"description": "Delete and restore collection using explicit down",
+		"up": [
+			{
+				"type": "deleteCollection",
+				"name": "to_restore"
+			}
+		],
+		"down": [
+			{
+				"type": "createCollection",
+				"name": "to_restore",
+				"options": {
+					"type": "document"
+				}
+			}
+		]
+	}`
+	secondMigration := `{
+		"description": "Fail migration",
+		"up": [
+			{
+				"type": "invalidOperation",
+				"name": "test",
+				"options": {}
+			}
+		]
+	}`
+
+	err = os.WriteFile(filepath.Join(tempDir, "000001_with_explicit_down.json"), []byte(firstMigration), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(tempDir, "000002_fail.json"), []byte(secondMigration), 0644)
+	require.NoError(t, err)
+
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "has a 'down' list of migrations, but down migrations are not yet supported")
+	assert.Contains(t, err.Error(), "unsupported operation type: invalidOperation")
+	assert.NotContains(t, err.Error(), "failed to auto-rollback")
+
+	exists, err := db.CollectionExists(ctx, "to_restore")
+	require.NoError(t, err)
+	assert.True(t, exists, "Collection should be restored by explicit down migration")
+}
+
+func TestMigrateArangoDatabaseAutoRollbackWithoutDownReversesUp(t *testing.T) {
+	ctx := context.Background()
+
+	container := testutil.NewArangoDBContainer(ctx, t)
+	defer container.Cleanup(ctx)
+
+	db := container.CreateTestDatabase(ctx, t, "test_reverse_up_rollback")
+
+	_, err := db.CreateCollection(ctx, "to_restore", &arangodb.CreateCollectionProperties{
+		Type: arangodb.CollectionTypeDocument,
+	})
+	require.NoError(t, err)
+
+	tempDir := t.TempDir()
+	firstMigration := `{
+		"description": "Delete collection without explicit down",
+		"up": [
+			{
+				"type": "deleteCollection",
+				"name": "to_restore"
+			}
+		]
+	}`
+	secondMigration := `{
+		"description": "Fail migration",
+		"up": [
+			{
+				"type": "invalidOperation",
+				"name": "test",
+				"options": {}
+			}
+		]
+	}`
+
+	err = os.WriteFile(filepath.Join(tempDir, "000001_without_down.json"), []byte(firstMigration), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(tempDir, "000002_fail.json"), []byte(secondMigration), 0644)
+	require.NoError(t, err)
+
+	err = MigrateArangoDatabase(ctx, db, MigrationOptions{
+		MigrationFolder:     tempDir,
+		MigrationCollection: "migrations",
+		AutoRollback:        true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to auto-rollback migrations")
+	assert.Contains(t, err.Error(), "cannot rollback collection deletion")
+
+	exists, err := db.CollectionExists(ctx, "to_restore")
+	require.NoError(t, err)
+	assert.False(t, exists, "Collection should remain deleted when reverse-up rollback is not possible")
 }
 
 func TestMigrateArangoDatabaseWithMissingUpList(t *testing.T) {

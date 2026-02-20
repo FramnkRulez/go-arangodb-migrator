@@ -6,6 +6,7 @@ A simple database migration tool for ArangoDB written in Go. This library provid
 
 - **Simple JSON-based migrations** - Easy to read and write migration files
 - **Automatic rollback** - If a migration fails, all operations are automatically rolled back
+- **Configurable down migrations** - Use explicit `down` operations, or let rollback reverse `up` operations automatically
 - **Integrity verification** - SHA256 hash verification prevents modified migration files from being applied
 - **Comprehensive operations** - Support for collections, indexes, graphs, and documents
 - **Ordered execution** - Migrations are applied in numeric order
@@ -131,10 +132,14 @@ Migration files are JSON files with the following structure:
         }
     ],
     "down": [
-        // Rollback operations (currently not implemented)
+        // Optional rollback operations executed exactly as listed
     ]
 }
 ```
+
+`down` is optional:
+- If `down` is provided, those operations are executed exactly in the listed order during rollback.
+- If `down` is omitted, rollback is derived by reversing successfully applied `up` operations.
 
 ## Supported Operations
 

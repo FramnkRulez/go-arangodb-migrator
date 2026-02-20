@@ -120,7 +120,8 @@ type Migration struct {
 	// Up contains the operations to apply when migrating forward.
 	Up []Operation `json:"up"`
 
-	// Down contains the operations to apply when rolling back (currently not implemented).
+	// Down contains the operations to apply when rolling back.
+	// If omitted, rollback is determined by reversing successfully applied Up operations.
 	Down []Operation `json:"down"`
 }
 
@@ -221,6 +222,12 @@ type PendingMigration struct {
 	FilePath        string
 }
 
+type appliedMigrationState struct {
+	MigrationNumber  string
+	Migration        *Migration
+	OperationResults []OperationResult
+}
+
 func collectPendingMigrations(ctx context.Context, db arangodb.Database, options MigrationOptions) ([]PendingMigration, arangodb.Collection, error) {
 	var migrationColl arangodb.Collection
 	migrationColl, err := db.GetCollection(ctx, options.MigrationCollection, &arangodb.GetCollectionOptions{
@@ -303,10 +310,6 @@ func collectPendingMigrations(ctx context.Context, db arangodb.Database, options
 				return nil, nil, fmt.Errorf("migration file %s does not include a valid 'up' list of migrations to apply", migrationNumber)
 			}
 
-			if len(migrationData.Down) > 0 {
-				return nil, nil, fmt.Errorf("migration file %s has a 'down' list of migrations, but down migrations are not yet supported", migrationNumber)
-			}
-
 			pendingMigrations = append(pendingMigrations, PendingMigration{
 				MigrationNumber: migrationNumber,
 				Migration:       migrationData,
@@ -337,7 +340,7 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 	// If auto-rollback is enabled, we need to track all applied migrations
 	// so we can rollback the entire batch if any migration fails
 	var appliedMigrations []AppliedMigration
-	var appliedOperations []OperationResult
+	var appliedMigrationStates []appliedMigrationState
 
 	// Apply each migration
 	for _, pendingMigration := range pendingMigrations {
@@ -347,48 +350,23 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 		logrus.Infof("applying migration %s...", migrationNumber)
 
 		// Track operations for this migration
-		var migrationOperations []OperationResult
+		currentMigrationState := appliedMigrationState{
+			MigrationNumber: migrationNumber,
+			Migration:       migration,
+		}
 
 		// Apply each operation in the migration
 		for _, operation := range migration.Up {
-			var operationResult OperationResult
-			var err error
-
-			switch operation.Type {
-			case "createCollection":
-				operationResult, err = createCollectionWithTracking(ctx, db, operation.Name, operation.Options)
-			case "createPersistentIndex":
-				operationResult, err = createPersistentIndexWithTracking(ctx, db, operation.Name, operation.Options)
-			case "createGeoIndex":
-				operationResult, err = createGeoIndexWithTracking(ctx, db, operation.Name, operation.Options)
-			case "createGraph":
-				operationResult, err = createGraphWithTracking(ctx, db, operation.Name, operation.Options)
-			case "addEdgeDefinition":
-				operationResult, err = addEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
-			case "deleteIndex":
-				operationResult, err = deleteIndexWithTracking(ctx, db, operation.Name, operation.Options)
-			case "deleteEdgeDefinition":
-				operationResult, err = deleteEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
-			case "deleteGraph":
-				operationResult, err = deleteGraphWithTracking(ctx, db, operation.Name)
-			case "deleteCollection":
-				operationResult, err = deleteCollectionWithTracking(ctx, db, operation.Name)
-			case "addDocument":
-				operationResult, err = addDocumentWithTracking(ctx, db, operation.Name, operation.Options)
-			case "updateDocument":
-				operationResult, err = updateDocumentWithTracking(ctx, db, operation.Name, operation.Options)
-			case "deleteDocument":
-				operationResult, err = deleteDocumentWithTracking(ctx, db, operation.Name, operation.Options)
-			default:
-				err = fmt.Errorf("unsupported operation type: %s", operation.Type)
-			}
+			operationResult, err := executeOperationWithTracking(ctx, db, operation)
 
 			if err != nil {
 				logrus.Errorf("migration operation failed for migration %s on %s: %v", migrationNumber, operation.Type, err)
 
 				if options.AutoRollback {
 					logrus.Error("auto-rollback enabled, rolling back all applied migrations...")
-					rollbackErr := autoRollback(ctx, db, appliedOperations)
+					rollbackStates := append([]appliedMigrationState{}, appliedMigrationStates...)
+					rollbackStates = append(rollbackStates, currentMigrationState)
+					rollbackErr := rollbackAppliedMigrations(ctx, db, rollbackStates)
 					if rollbackErr != nil {
 						logrus.Errorf("failed to auto-rollback migrations: %v", rollbackErr)
 						logrus.Error("database may be in an inconsistent state")
@@ -396,15 +374,8 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 					}
 					return fmt.Errorf("migration operation failed for migration %s: %v", migrationNumber, err)
 				} else {
-					// Legacy rollback behavior - only rollback operations from current migration
 					logrus.Error("rolling back applied operations from current migration...")
-					// Convert Operation to OperationResult for legacy rollback
-					legacyOperation := OperationResult{
-						Type:    operation.Type,
-						Name:    operation.Name,
-						Options: operation.Options,
-					}
-					rollbackErr := autoRollback(ctx, db, []OperationResult{legacyOperation})
+					rollbackErr := rollbackMigration(ctx, db, currentMigrationState)
 					if rollbackErr != nil {
 						logrus.Errorf("failed to rollback migration: %v", rollbackErr)
 						logrus.Error("database may be in an unclean state")
@@ -418,8 +389,7 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 			operationResult.Type = operation.Type
 			operationResult.Name = operation.Name
 			operationResult.Options = operation.Options
-			migrationOperations = append(migrationOperations, operationResult)
-			appliedOperations = append(appliedOperations, operationResult)
+			currentMigrationState.OperationResults = append(currentMigrationState.OperationResults, operationResult)
 		}
 
 		// Store migration for later application (only if entire batch succeeds)
@@ -427,8 +397,9 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 			MigrationNumber:  migrationNumber,
 			AppliedAt:        time.Now(),
 			Sha256:           pendingMigration.Hash,
-			OperationResults: migrationOperations,
+			OperationResults: currentMigrationState.OperationResults,
 		})
+		appliedMigrationStates = append(appliedMigrationStates, currentMigrationState)
 		logrus.Infof("migration %s applied successfully.", migrationNumber)
 	}
 
@@ -444,57 +415,42 @@ func MigrateArangoDatabase(ctx context.Context, db arangodb.Database, options Mi
 	return nil
 }
 
-// autoRollback rolls back all operations in reverse order using the tracked operation results
-func autoRollback(ctx context.Context, db arangodb.Database, appliedOperations []OperationResult) error {
-	logrus.Info("starting auto-rollback of all applied operations...")
+func rollbackAppliedMigrations(ctx context.Context, db arangodb.Database, appliedMigrations []appliedMigrationState) error {
+	logrus.Info("starting auto-rollback of all applied migrations...")
+	for i := len(appliedMigrations) - 1; i >= 0; i-- {
+		migration := appliedMigrations[i]
+		if err := rollbackMigration(ctx, db, migration); err != nil {
+			return fmt.Errorf("failed to rollback migration %s: %v", migration.MigrationNumber, err)
+		}
+	}
+	logrus.Info("auto-rollback completed successfully")
+	return nil
+}
 
+func rollbackMigration(ctx context.Context, db arangodb.Database, migration appliedMigrationState) error {
+	if len(migration.Migration.Down) > 0 {
+		logrus.Infof("rolling back migration %s using explicit down operations", migration.MigrationNumber)
+		return applyOperations(ctx, db, migration.Migration.Down)
+	}
+
+	logrus.Infof("rolling back migration %s by reversing applied up operations", migration.MigrationNumber)
+	return rollbackOperationResults(ctx, db, migration.OperationResults)
+}
+
+func applyOperations(ctx context.Context, db arangodb.Database, operations []Operation) error {
+	for _, operation := range operations {
+		if err := executeOperation(ctx, db, operation); err != nil {
+			return fmt.Errorf("failed to apply operation %s (%s): %v", operation.Type, operation.Name, err)
+		}
+	}
+	return nil
+}
+
+func rollbackOperationResults(ctx context.Context, db arangodb.Database, appliedOperations []OperationResult) error {
 	// Rollback in reverse order (LIFO)
 	for i := len(appliedOperations) - 1; i >= 0; i-- {
 		operation := appliedOperations[i]
-		var err error
-
-		switch operation.Type {
-		case "createCollection":
-			err = deleteCollection(ctx, db, operation.Name)
-		case "createPersistentIndex":
-			err = deleteIndex(ctx, db, operation.Name, operation.Options)
-		case "createGeoIndex":
-			err = deleteIndex(ctx, db, operation.Name, operation.Options)
-		case "createGraph":
-			err = deleteGraph(ctx, db, operation.Name)
-		case "addEdgeDefinition":
-			err = deleteEdgeDefinition(ctx, db, operation.Name, operation.Options)
-		case "addDocument":
-			// Use the tracked document ID for deletion
-			if docID, ok := operation.Result["documentID"].(string); ok {
-				err = deleteDocumentByID(ctx, db, operation.Name, docID)
-			} else {
-				err = deleteDocument(ctx, db, operation.Name, operation.Options)
-			}
-		case "updateDocument":
-			// Restore the original document state
-			if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
-				err = restoreDocument(ctx, db, operation.Name, originalDoc)
-			} else {
-				err = fmt.Errorf("cannot rollback document update - no original state available")
-			}
-		case "deleteCollection":
-			err = fmt.Errorf("cannot rollback collection deletion")
-		case "deleteIndex":
-			err = fmt.Errorf("cannot rollback index deletion")
-		case "deleteEdgeDefinition":
-			err = fmt.Errorf("cannot rollback edge definition deletion")
-		case "deleteGraph":
-			err = fmt.Errorf("cannot rollback graph deletion")
-		case "deleteDocument":
-			// Restore the deleted document
-			if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
-				err = restoreDocument(ctx, db, operation.Name, originalDoc)
-			} else {
-				err = fmt.Errorf("cannot rollback document deletion - no original state available")
-			}
-		}
-
+		err := rollbackOperationResult(ctx, db, operation)
 		if err != nil {
 			logrus.Errorf("failed to rollback operation %s: %v", operation.Type, err)
 			return fmt.Errorf("failed to rollback operation %s: %v", operation.Type, err)
@@ -502,44 +458,112 @@ func autoRollback(ctx context.Context, db arangodb.Database, appliedOperations [
 
 		logrus.Infof("rolled back operation: %s (%s)", operation.Type, operation.Name)
 	}
-
-	logrus.Info("auto-rollback completed successfully")
 	return nil
 }
 
-func rollback(ctx context.Context, db arangodb.Database, appliedOperations []Operation) error {
-	for _, operation := range appliedOperations {
-		var err error
-		switch operation.Type {
-		case "createCollection":
-			err = deleteCollection(ctx, db, operation.Name)
-		case "createPersistentIndex":
-			err = deleteIndex(ctx, db, operation.Name, operation.Options)
-		case "createGeoIndex":
-			err = deleteIndex(ctx, db, operation.Name, operation.Options)
-		case "createGraph":
-			err = deleteGraph(ctx, db, operation.Name)
-		case "addEdgeDefinition":
-			err = deleteEdgeDefinition(ctx, db, operation.Name, operation.Options)
-		case "addDocument":
-			err = deleteDocument(ctx, db, operation.Name, operation.Options)
-		case "updateDocument":
-			return fmt.Errorf("cannot rollback document update")
-		case "deleteCollection":
-			return fmt.Errorf("cannot rollback collection deletion")
-		case "deleteIndex":
-			return fmt.Errorf("cannot rollback persistent index deletion")
-		case "deleteEdgeDefinition":
-			return fmt.Errorf("cannot rollback edge definition deletion")
-		case "deleteGraph":
-			return fmt.Errorf("cannot rollback graph deletion")
+func rollbackOperationResult(ctx context.Context, db arangodb.Database, operation OperationResult) error {
+	switch operation.Type {
+	case "createCollection":
+		return deleteCollection(ctx, db, operation.Name)
+	case "createPersistentIndex":
+		return deleteIndex(ctx, db, operation.Name, operation.Options)
+	case "createGeoIndex":
+		return deleteIndex(ctx, db, operation.Name, operation.Options)
+	case "createGraph":
+		return deleteGraph(ctx, db, operation.Name)
+	case "addEdgeDefinition":
+		return deleteEdgeDefinition(ctx, db, operation.Name, operation.Options)
+	case "addDocument":
+		// Use the tracked document ID for deletion.
+		if docID, ok := operation.Result["documentID"].(string); ok {
+			return deleteDocumentByID(ctx, db, operation.Name, docID)
 		}
-
-		if err != nil {
-			return err
+		return deleteDocument(ctx, db, operation.Name, operation.Options)
+	case "updateDocument":
+		// Restore the original document state.
+		if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
+			return restoreDocument(ctx, db, operation.Name, originalDoc)
 		}
+		return fmt.Errorf("cannot rollback document update - no original state available")
+	case "deleteCollection":
+		return fmt.Errorf("cannot rollback collection deletion")
+	case "deleteIndex":
+		return fmt.Errorf("cannot rollback index deletion")
+	case "deleteEdgeDefinition":
+		return fmt.Errorf("cannot rollback edge definition deletion")
+	case "deleteGraph":
+		return fmt.Errorf("cannot rollback graph deletion")
+	case "deleteDocument":
+		// Restore the deleted document.
+		if originalDoc, ok := operation.RollbackData["originalDocument"].(map[string]interface{}); ok {
+			return restoreDocument(ctx, db, operation.Name, originalDoc)
+		}
+		return fmt.Errorf("cannot rollback document deletion - no original state available")
+	default:
+		return fmt.Errorf("cannot rollback unsupported operation type: %s", operation.Type)
 	}
-	return nil
+}
+
+func executeOperationWithTracking(ctx context.Context, db arangodb.Database, operation Operation) (OperationResult, error) {
+	switch operation.Type {
+	case "createCollection":
+		return createCollectionWithTracking(ctx, db, operation.Name, operation.Options)
+	case "createPersistentIndex":
+		return createPersistentIndexWithTracking(ctx, db, operation.Name, operation.Options)
+	case "createGeoIndex":
+		return createGeoIndexWithTracking(ctx, db, operation.Name, operation.Options)
+	case "createGraph":
+		return createGraphWithTracking(ctx, db, operation.Name, operation.Options)
+	case "addEdgeDefinition":
+		return addEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
+	case "deleteIndex":
+		return deleteIndexWithTracking(ctx, db, operation.Name, operation.Options)
+	case "deleteEdgeDefinition":
+		return deleteEdgeDefinitionWithTracking(ctx, db, operation.Name, operation.Options)
+	case "deleteGraph":
+		return deleteGraphWithTracking(ctx, db, operation.Name)
+	case "deleteCollection":
+		return deleteCollectionWithTracking(ctx, db, operation.Name)
+	case "addDocument":
+		return addDocumentWithTracking(ctx, db, operation.Name, operation.Options)
+	case "updateDocument":
+		return updateDocumentWithTracking(ctx, db, operation.Name, operation.Options)
+	case "deleteDocument":
+		return deleteDocumentWithTracking(ctx, db, operation.Name, operation.Options)
+	default:
+		return OperationResult{}, fmt.Errorf("unsupported operation type: %s", operation.Type)
+	}
+}
+
+func executeOperation(ctx context.Context, db arangodb.Database, operation Operation) error {
+	switch operation.Type {
+	case "createCollection":
+		return createCollection(ctx, db, operation.Name, operation.Options)
+	case "createPersistentIndex":
+		return createPersistentIndex(ctx, db, operation.Name, operation.Options)
+	case "createGeoIndex":
+		return createGeoIndex(ctx, db, operation.Name, operation.Options)
+	case "createGraph":
+		return createGraph(ctx, db, operation.Name, operation.Options)
+	case "addEdgeDefinition":
+		return addEdgeDefinition(ctx, db, operation.Name, operation.Options)
+	case "addDocument":
+		return addDocument(ctx, db, operation.Name, operation.Options)
+	case "updateDocument":
+		return updateDocument(ctx, db, operation.Name, operation.Options)
+	case "deleteCollection":
+		return deleteCollection(ctx, db, operation.Name)
+	case "deleteIndex":
+		return deleteIndex(ctx, db, operation.Name, operation.Options)
+	case "deleteEdgeDefinition":
+		return deleteEdgeDefinition(ctx, db, operation.Name, operation.Options)
+	case "deleteGraph":
+		return deleteGraph(ctx, db, operation.Name)
+	case "deleteDocument":
+		return deleteDocument(ctx, db, operation.Name, operation.Options)
+	default:
+		return fmt.Errorf("unsupported operation type: %s", operation.Type)
+	}
 }
 
 // Tracking versions of operations that return OperationResult for rollback
